@@ -2,9 +2,8 @@
 
 ## 0.1 Rube Goldberg release
 
-This library implements persistent datastructures for Rust, with 
-efficient, with the complexity of the union operation can be sublinear 
-in practical cases.
+This library implements persistent datastructures for Rust, where the complexity of
+the union operation can be sublinear in practical cases.
 
 ## Deterministically balanced search trees
 This is achieved by using deterministically balanced trees, where the 
@@ -36,7 +35,7 @@ Collection comes with 3 pre-defined sets of operations making up a Set, a Vector
 
 To define a collection, you use the `collection!` macro:
 
-```rs
+```rust
     collection!(Set<T> {
         max: Max<T>,
         checksum: CheckSum<u64>,
@@ -50,7 +49,7 @@ To define a collection, you use the `collection!` macro:
     collection!(Map<T> {
         key: Key<T::Key>,
         keysum: KeySum<u64>,
-				valsum: ValSum<u64>,
+        valsum: ValSum<u64>,
     } where T: Keyed, 
             T::Key: Hash,
             T::Value: Hash);				
