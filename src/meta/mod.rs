@@ -9,16 +9,26 @@ use std::borrow::Cow;
 use Val;
 use stash::Location;
 
+pub use meta::cardinality::Cardinality;
+pub use meta::checksum::CheckSum;
+pub use meta::max::Max;
+pub use meta::key::Key;
+
+/// Metadata for `T`
 pub trait Meta<T>
     where Self: Clone,
           T: Val
 {
+    /// Construct a metadata value from `&T`
     fn from_t(t: &T) -> Self;
     // The PhantomData argument seems to be neccesary
     // to have T be in scope in this method.
+
+    /// Merge two metadata values, `(M, M) -> M`
     fn merge(&mut self, other: &Self, _t: PhantomData<T>);
 }
 
+/// Implemented for compound-Metadata, for each of the sub-metadatas.
 pub trait SubMeta<T>
     where T: Clone
 {

@@ -8,19 +8,29 @@ use Val;
 use tree::branch::{Branch, BranchResult};
 use tree::level::{Beginning, End};
 
+/// Vector Operations on a Collection
 pub trait VectorOps<T, M>
     where Self: Sized,
           T: Val,
           M: Meta<T>
 {
+    /// Insert element at index i
     fn insert(&mut self, i: usize, t: T);
+    /// Remove element from index i
     fn remove(&mut self, i: usize) -> Option<T>;
+    /// Get a reference to element at index i
     fn get(&self, i: usize) -> Option<&T>;
+    /// Get a mutable reference to element at index i
     fn get_mut(&mut self, i: usize) -> Option<MutContext<T, M, Beginning>>;
+    /// Push element to end of vector
     fn push(&mut self, t: T);
+    /// Pop from the end of the vector
     fn pop(&mut self) -> Option<T>;
+    /// Split the vector in two at index i
     fn split(&mut self, i: usize) -> (Self, Self);
+    /// Concatenate two vectors
     fn concat(&mut self, b: &mut Self) -> Self;
+    /// Splice in a vector at index i
     fn splice(&mut self, i: usize, from: &mut Self) -> Self;
 }
 

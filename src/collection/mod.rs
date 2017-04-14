@@ -268,11 +268,12 @@ impl<T, M> Collection<T, M>
     }
 }
 
+#[macro_export]
 macro_rules! collection {
     ($collection:ident<$t:ident>
      {
          $( $slot:ident: $submeta:ident<$subtype:ty>, )*
-     } where $($rest:tt)*) => (
+     } where $($restraints:tt)*) => (
         mod col {
             use std::marker::PhantomData;
             use std::borrow::Cow;
@@ -282,7 +283,7 @@ macro_rules! collection {
             use super::*;
 
             #[derive(Clone)]
-                pub struct CollectionMeta<$t> where $t: Val, $($rest)*
+                pub struct CollectionMeta<$t> where $t: Val, $($restraints)*
             {
                 _t: PhantomData<$t>,
                 $(
@@ -290,7 +291,7 @@ macro_rules! collection {
                 )*
             }
 
-            impl<$t> Meta<$t> for CollectionMeta<$t> where $t: Val, $($rest)* {
+            impl<$t> Meta<$t> for CollectionMeta<$t> where $t: Val, $($restraints)* {
                     fn from_t(t: &$t) -> Self {
                         CollectionMeta {
                             _t: PhantomData,
@@ -309,7 +310,7 @@ macro_rules! collection {
             macro_rules! as_ref {
                 ($_submeta:ident, $_subtype:ty, $_slot:ident) => (
                     impl<'a, $t> SubMeta<$_submeta<$_subtype>>
-                        for CollectionMeta<T> where $t: Val, $($rest)*
+                        for CollectionMeta<T> where $t: Val, $($restraints)*
                     {
                         fn submeta(&self) -> Cow<$_submeta<$_subtype>> {
                             Cow::Borrowed(&self.$_slot)

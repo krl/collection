@@ -23,3 +23,12 @@ trait_group! {
 }
 
 pub use collection::Collection;
+
+pub use ops::vector::VectorOps;
+pub use ops::map::{MapOps, MapOpsKeySum};
+pub use ops::set::{SetOps, SetOpsCheckSum};
+
+pub use meta::Meta;
+pub use meta::Max;
+pub use meta::CheckSum;
+pub use meta::Key;

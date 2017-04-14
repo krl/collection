@@ -13,6 +13,7 @@ use tree::branch::{Branch, BranchResult};
 use tree::level::{Beginning, End, Relative};
 use tree::weight::Weight;
 
+/// A Key-Value pair
 #[derive(Clone, Debug)]
 pub struct KV<K, V>
     where K: Val + Ord + PartialEq,
@@ -102,26 +103,33 @@ impl<'a, T, M, R> DerefMut for ValContext<'a, T, M, R>
     }
 }
 
+/// Map operations on a Collection
 pub trait MapOps<K, V, M>
     where Self: Sized,
           M: Meta<KV<K, V>>,
           K: Val + Ord,
           V: Clone
 {
+    /// Insert a value `V` at key `K`
     fn insert(&mut self, key: K, V);
+    /// Remove value at key `K`
     fn remove(&mut self, key: K) -> Option<V>;
+    /// Get a reference to the value at key `K`
     fn get(&self, key: K) -> Option<&V>;
+    /// Get a mutable reference to the value at key `K`
     fn get_mut(&mut self,
                key: K)
                -> Option<ValContext<KV<K, V>, M, Beginning>>;
 }
 
+/// Operations on a map with `KeySum` metadata
 pub trait MapOpsKeySum<K, V, M>
     where Self: MapOps<K, V, M>,
           M: Meta<KV<K, V>>,
           K: Val + Ord,
           V: Clone
 {
+    /// Merge two maps, overwriting values from `self` with `b`
     fn merge(&mut self, b: &mut Self) -> Self;
 }
 

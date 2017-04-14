@@ -11,17 +11,24 @@ use meta::checksum::CheckSum;
 use tree::branch::{Branch, BranchResult};
 use tree::level::{Beginning, End};
 
+
+/// Set operations on a Collection
 pub trait SetOps<T>
     where Self: Sized
 {
+    /// Insert element into set
     fn insert(&mut self, t: T);
+    /// Remove element from set
     fn remove(&mut self, t: &T) -> Option<T>;
+    /// Is element a member of this set?
     fn member(&self, t: &T) -> bool;
 }
 
+/// Set operations on Checksummed sets
 pub trait SetOpsCheckSum<T>
     where Self: SetOps<T>
 {
+    /// Return a new Collection, that is the union of `self` and `b`
     fn union(&mut self, b: &mut Self) -> Self;
 }
 

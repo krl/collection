@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use std::borrow::Cow;
 use meta::{Meta, Select, Selection};
 
+/// Metadata for the maximum `T` in subtree.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Max<T>(T);
 

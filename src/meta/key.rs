@@ -10,6 +10,7 @@ use meta::{Meta, SubMeta, Select, Selection};
 
 use meta::checksum::CheckSum;
 
+/// This `T` can be viewed as a Key-Value pair.
 pub trait Keyed {
     type Key: Val + Ord;
     type Value: Clone;
@@ -19,6 +20,7 @@ pub trait Keyed {
     fn value_mut(&mut self) -> &mut Self::Value;
 }
 
+/// A key, K is usually `T::Key` where `T: Keyed`
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Key<K>(K);
 #[derive(Clone, PartialEq)]
@@ -39,6 +41,7 @@ impl<T> ValSum<T> {
 }
 
 impl<K> Key<K> {
+    /// Construct a new Key
     pub fn new(key: K) -> Self {
         Key(key)
     }

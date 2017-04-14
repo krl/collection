@@ -1,5 +1,7 @@
 # Collection
 
+[Documentation](https://krl.github.io/collection/doc/collection/struct.Collection.html)
+
 ## 0.1 Rube Goldberg release
 
 This library implements persistent datastructures for Rust, where the complexity of
@@ -10,7 +12,7 @@ This is achieved by using deterministically balanced trees, where the
 split-points of the tree are determined by the `Weight` of the elements
 in the collection.
 
-That T implements Weight, means that `T`, or parts of `T` can be Hashed
+That `T` implements Weight, means that `T`, or parts of `T` can be Hashed
 this hash is then used to determine the weight, essentialy by counting 
 leading zeroes in the hash. The weight then determines how many levels to
 split.
