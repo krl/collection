@@ -1,0 +1,14 @@
+[package]
+authors = ["Kristoffer Ström <kristoffer@rymdkoloni.se>"]
+name = "collection"
+version = "0.1.1"
+license = "GPL-3.0"
+description = "Deterministic, copy-on-write balanced search trees"
+
+documentation = "https://krl.github.io/collection/doc/collection/index.html"
+repository = "https://github.com/krl/collection"
+
+[dependencies]
+rand = "0.3.15"
+seahash = "3.0.4"
+trait-group = "0.1.0"
