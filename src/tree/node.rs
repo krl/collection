@@ -1,33 +1,32 @@
 use std::collections::VecDeque;
-use std::fmt;
+use std::io::{self, Read};
 use std::marker::PhantomData;
 
 use std::borrow::Cow;
 
-use Val;
-use stash::{RelStash, Location};
+use tree::weight::Weight;
+use freezer::{Freeze, Deps, Location, WriteHashing, CryptoHash};
 use meta::{Meta, SubMeta};
-use html::Html;
 
 use meta::checksum::CheckSum;
 
-pub enum Child<T, M>
-    where T: Val,
-          M: Meta<T>
+pub enum Child<T, M, H>
+    where H: CryptoHash
 {
-    Node { location: Location<T, M>, meta: M },
+    Node { location: Location<H>, meta: M },
     Leaf(T),
 }
 
-impl<T, M> Child<T, M>
-    where T: Val,
-          M: Meta<T>
+impl<T, M, H> Child<T, M, H>
+    where T: Weight + Freeze<H> + Clone,
+          M: Meta<T>,
+          H: CryptoHash
 {
     pub fn new_leaf(t: T) -> Self {
         Child::Leaf(t)
     }
 
-    pub fn new_node(location: Location<T, M>, meta: M) -> Self {
+    pub fn new_node(location: Location<H>, meta: M) -> Self {
         Child::Node {
             location: location,
             meta: meta,
@@ -41,22 +40,22 @@ impl<T, M> Child<T, M>
         }
     }
 
-    fn relativize(&mut self, depth: usize) {
-        match *self {
-            Child::Node { ref mut location, .. } => {
-                *location = location.relative(depth)
-            }
-            _ => return,
+    pub fn into_meta(self) -> M {
+        match self {
+            Child::Leaf(t) => M::from_t(&t),
+            Child::Node { meta, .. } => meta,
         }
     }
 }
 
-pub enum RemoveResult<T>
-    where T: Val
-{
+pub enum RemoveResult<T, H> {
     Ok(T),
     Final(T),
-    Merge { t: T, depth: usize },
+    Merge {
+        t: T,
+        depth: usize,
+        _p: PhantomData<H>,
+    },
     Void,
 }
 
@@ -65,31 +64,35 @@ pub enum InsertResult {
     Split(usize),
 }
 
-pub struct Node<T, M>
-    where T: Val,
-          M: Meta<T>
+pub struct Node<T, M, H>
+    where H: CryptoHash
 {
-    pub children: VecDeque<Child<T, M>>,
+    pub children: VecDeque<Child<T, M, H>>,
 }
 
-impl<T, M> Clone for Node<T, M>
-    where T: Val,
-          M: Meta<T>
+impl<T, M, H> Clone for Node<T, M, H>
+    where H: CryptoHash,
+          T: Clone,
+          M: Clone
 {
     fn clone(&self) -> Self {
         Node { children: self.children.clone() }
     }
 }
 
-impl<T, M> Clone for Child<T, M>
-    where T: Val,
-          M: Meta<T>
+impl<T, M, H> Clone for Child<T, M, H>
+    where T: Clone,
+          M: Clone,
+          H: CryptoHash
 {
     fn clone(&self) -> Self {
         match *self {
-            Child::Node { location, ref meta } => {
+            Child::Node {
+                ref location,
+                ref meta,
+            } => {
                 Child::Node {
-                    location: location,
+                    location: location.clone(),
                     meta: meta.clone(),
                 }
             }
@@ -98,15 +101,16 @@ impl<T, M> Clone for Child<T, M>
     }
 }
 
-impl<T, M> Node<T, M>
-    where T: Val,
-          M: Meta<T>
+impl<T, M, H> Node<T, M, H>
+    where T: Weight + Freeze<H> + Clone,
+          M: Meta<T> + Clone,
+          H: CryptoHash
 {
     pub fn new() -> Self {
         Node { children: VecDeque::new() }
     }
 
-    pub fn concat(a: &Node<T, M>, b: &Node<T, M>) -> Self {
+    pub fn concat(a: &Node<T, M, H>, b: &Node<T, M, H>) -> Self {
         let mut node = Node::new();
         for child in &a.children {
             node.children.push_back(child.clone());
@@ -117,7 +121,7 @@ impl<T, M> Node<T, M>
         node
     }
 
-    pub fn concat_middle(a: &Node<T, M>, b: &Node<T, M>) -> Self {
+    pub fn concat_middle(a: &Node<T, M, H>, b: &Node<T, M, H>) -> Self {
         let mut node = Node::new();
         for child in &a.children {
             node.children.push_back(child.clone());
@@ -128,7 +132,7 @@ impl<T, M> Node<T, M>
         node
     }
 
-    pub fn single(child: Child<T, M>) -> Self {
+    pub fn single(child: Child<T, M, H>) -> Self {
         Node { children: vec![child].into() }
     }
 
@@ -173,10 +177,16 @@ impl<T, M> Node<T, M>
         m.map(|inner| Cow::Owned(inner))
     }
 
-    pub fn relativize(&mut self, depth: usize) {
-        for child in &mut self.children {
-            child.relativize(depth)
+    pub fn into_meta(self) -> Option<M> {
+        let mut m = None;
+        let Node { mut children } = self;
+        for c in children.drain(..) {
+            match m {
+                None => m = Some(c.into_meta()),
+                Some(ref mut meta) => meta.merge(&c.into_meta(), PhantomData),
+            }
         }
+        m.map(|meta| meta)
     }
 
     pub fn split(&mut self, ofs: usize) -> Self {
@@ -204,7 +214,7 @@ impl<T, M> Node<T, M>
         new
     }
 
-    pub fn insert(&mut self, ofs: usize, child: Child<T, M>) {
+    pub fn insert(&mut self, ofs: usize, child: Child<T, M, H>) {
         self.children.insert(ofs, child)
     }
 
@@ -214,11 +224,14 @@ impl<T, M> Node<T, M>
         self_weight
     }
 
-    pub fn remove(&mut self, ofs: usize) -> Option<Child<T, M>> {
+    pub fn remove(&mut self, ofs: usize) -> Option<Child<T, M, H>> {
         self.children.remove(ofs)
     }
 
-    pub fn remove_t(&mut self, ofs: usize, divisor: usize) -> RemoveResult<T> {
+    pub fn remove_t(&mut self,
+                    ofs: usize,
+                    divisor: usize)
+                    -> RemoveResult<T, H> {
         if self.children.len() == 0 {
             RemoveResult::Void
         } else {
@@ -226,7 +239,11 @@ impl<T, M> Node<T, M>
                 Some(Child::Leaf(t)) => {
                     let w = t.weight() / divisor;
                     if w > 0 {
-                        RemoveResult::Merge { t: t, depth: w }
+                        RemoveResult::Merge {
+                            t: t,
+                            depth: w,
+                            _p: PhantomData,
+                        }
                     } else if self.empty() {
                         RemoveResult::Final(t)
                     } else {
@@ -238,43 +255,51 @@ impl<T, M> Node<T, M>
         }
     }
 
-    pub fn update(&mut self, ofs: usize, child: Child<T, M>) {
+    pub fn update(&mut self, ofs: usize, child: Child<T, M, H>) {
         self.children[ofs] = child
     }
 
-    pub fn child<'a: 'b, 'b>(&'a self, ofs: usize) -> Option<&'b Child<T, M>> {
+    pub fn child(&self, ofs: usize) -> Option<&Child<T, M, H>> {
         self.children.get(ofs)
     }
 
-    pub fn rightmost_child(&self) -> Option<&Child<T, M>> {
-        let l = self.children.len();
-        self.children.get(l - 1)
+    pub fn into_child(self, ofs: usize) -> Option<Child<T, M, H>> {
+        let Node { mut children, .. } = self;
+        children.remove(ofs)
     }
 
-    pub fn child_mut(&mut self, ofs: usize) -> Option<&mut Child<T, M>> {
+    pub fn child_mut(&mut self, ofs: usize) -> Option<&mut Child<T, M, H>> {
         self.children.get_mut(ofs)
     }
 
-    pub fn child_node_location(&self, ofs: usize) -> Option<Location<T, M>> {
+    pub fn child_node_location(&self, ofs: usize) -> Option<&Location<H>> {
         match self.child(ofs) {
-            Some(&Child::Node { location, .. }) => Some(location),
+            Some(&Child::Node { ref location, .. }) => Some(location),
             _ => None,
         }
     }
 
-    pub fn merge(&mut self, Node { ref mut children, .. }: Node<T, M>) {
+    pub fn merge(&mut self, Node { ref mut children, .. }: Node<T, M, H>) {
         self.children.append(children);
     }
 
-    pub fn splice(&mut self, ofs: usize, mut from: Node<T, M>) {
+    pub fn splice(&mut self, ofs: usize, mut from: Node<T, M, H>) {
         while let Some(child) = from.children.pop_back() {
             self.insert(ofs, child);
         }
     }
+
+    pub fn has_leaf_children(&self) -> bool {
+        match self.children.get(0) {
+            Some(&Child::Node { .. }) => false,
+            _ => true,
+        }
+    }
 }
 
-impl<'a, T, M> PartialEq for Node<T, M>
-    where T: Val,
+impl<'a, T, M, H> PartialEq for Node<T, M, H>
+    where T: Weight + Freeze<H> + Clone,
+          H: CryptoHash,
           M: Meta<T> + SubMeta<CheckSum<u64>>
 {
     fn eq(&self, other: &Self) -> bool {
@@ -294,34 +319,79 @@ impl<'a, T, M> PartialEq for Node<T, M>
     }
 }
 
-impl<T, M> Html<T, M> for Node<T, M>
-    where T: Val + fmt::Debug,
-          M: Meta<T>
+impl<T, M, H> Freeze<H> for Node<T, M, H>
+    where T: Weight + Freeze<H>,
+          <H as CryptoHash>::Digest: Freeze<H>,
+          M: Meta<T> + Freeze<H>,
+          H: CryptoHash
 {
-    fn _html(&self, stash: RelStash<T, M>) -> String {
-        let mut s = String::new();
+    fn dependencies(&self) -> Deps<H> {
+        let hashes = vec![];
         for child in &self.children {
-            s += &child._html(stash);
-        }
-        format!("<div class=\"node\">
-                   {}
-                 </div>",
-                s)
-    }
-}
-
-impl<T, M> Html<T, M> for Child<T, M>
-    where T: Val + fmt::Debug,
-          M: Meta<T>
-{
-    fn _html(&self, stash: RelStash<T, M>) -> String {
-        match *self {
-            Child::Leaf(ref t) => {
-                format!("<div class=\"leaf weight-{}\">{:?}</div>",
-                        t.weight() / 2,
-                        t)
+            match child {
+                &Child::Node { .. } => {}
+                &Child::Leaf { .. } => break,
             }
-            Child::Node { location, .. } => location._html(stash),
+        }
+        Deps::new(hashes)
+    }
+
+    fn freeze(&self,
+              into: &mut WriteHashing<Digest = H::Digest>,
+              deps: Deps<H>)
+              -> io::Result<H::Digest> {
+        let len = self.len();
+        let has_leaf_children = self.has_leaf_children();
+        Freeze::<H>::freeze(&has_leaf_children, into, Deps::none())?;
+        Freeze::<H>::freeze(&len, into, Deps::none())?;
+        for i in 0..len {
+            match self.children[i] {
+                Child::Node { .. } => {
+                    Freeze::<H>::freeze(&deps[i], into, Deps::none())?;
+                }
+                _ => unreachable!(),
+            }
+        }
+        let hash = into.fin();
+        // Write the metadata without hashing it
+        if !has_leaf_children {
+            for i in 0..len {
+                match self.children[i] {
+                    Child::Node { ref meta, .. } => {
+                        Freeze::<H>::freeze(meta, into, Deps::none())?;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        Ok(hash)
+    }
+
+    fn thaw(from: &mut Read) -> io::Result<Self> {
+        let len = Freeze::<H>::thaw(from)?;
+        let has_leaf_children = Freeze::<H>::thaw(from)?;
+
+        if has_leaf_children {
+            let mut node = Node::new();
+            for _ in 0..len {
+                node.children
+                    .push_back(Child::new_leaf(Freeze::<H>::thaw(from)?))
+            }
+            Ok(node)
+        } else {
+            let mut locations = vec![];
+            let mut metas = vec![];
+            for _ in 0..len {
+                locations.push(Location::new_from_hash(H::read_digest(from)?));
+            }
+            for _ in 0..len {
+                metas.push(Freeze::<H>::thaw(from)?);
+            }
+            let mut node = Node::new();
+            for (loc, meta) in locations.drain(..).zip(metas.drain(..)) {
+                node.children.push_back(Child::new_node(loc, meta));
+            }
+            Ok(node)
         }
     }
 }

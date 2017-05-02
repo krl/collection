@@ -1,4 +1,3 @@
-use Val;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use meta::{Meta, Select, Selection};
@@ -8,7 +7,7 @@ use meta::{Meta, Select, Selection};
 pub struct Max<T>(T);
 
 impl<T> Meta<T> for Max<T>
-    where T: Val + Ord + PartialEq
+    where T: Clone + Ord
 {
     fn from_t(t: &T) -> Self {
         Max(t.clone())
@@ -22,7 +21,7 @@ impl<T> Meta<T> for Max<T>
 }
 
 impl<T> Select<T> for Max<T>
-    where T: Val + Ord + PartialEq
+    where T: Clone + Ord + PartialEq
 {
     fn select(&mut self, other: Cow<Self>) -> Selection {
         if self.0 == other.0 {

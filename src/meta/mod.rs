@@ -6,8 +6,7 @@ pub mod checksum;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 
-use Val;
-use stash::Location;
+use freezer::{Location, CryptoHash};
 
 pub use meta::cardinality::Cardinality;
 pub use meta::checksum::CheckSum;
@@ -16,8 +15,7 @@ pub use meta::key::Key;
 
 /// Metadata for `T`
 pub trait Meta<T>
-    where Self: Clone,
-          T: Val
+    where Self: Clone
 {
     /// Construct a metadata value from `&T`
     fn from_t(t: &T) -> Self;
@@ -52,12 +50,11 @@ pub trait Select<T>
     fn select(&mut self, other: Cow<Self>) -> Selection;
 }
 
-pub enum Found<T, M>
-    where T: Val,
-          M: Meta<T>
+pub enum Found<H>
+    where H: CryptoHash
 {
     /// It might be there, but deeper!
-    Node(Location<T, M>),
+    Node(Location<H>),
     /// No such thing!
     Miss,
     /// We found it!

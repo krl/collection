@@ -1,26 +1,23 @@
 //! Persistent datastructure
 
-#![deny(missing_docs)]
+//#![deny(missing_docs)]
+
+#[cfg(not(test))]
+mod collection;
+
+#[cfg(test)]
 #[macro_use]
 mod collection;
 
+extern crate freezer;
 extern crate seahash;
-#[macro_use]
-extern crate trait_group;
 
-mod stash;
 mod tree;
-mod html;
 mod meta;
 mod ops;
 
-use tree::weight::Weight;
-
-trait_group! {
-/// A value that can be put into a Collection.
-/// Has to be clonable, and have impl the `tree::weight::Weight` trait
-    pub trait Val: Weight + Clone
-}
+#[cfg(test)]
+mod test_common;
 
 pub use collection::Collection;
 

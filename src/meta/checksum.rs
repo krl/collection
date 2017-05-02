@@ -3,13 +3,16 @@ use seahash::SeaHasher;
 use std::marker::PhantomData;
 use std::hash::{Hash, Hasher};
 
-use Val;
 use meta::{Meta, SubMeta};
+
+use freezer::{CryptoHash, Backend, Freeze};
+use tree::node::Node;
+use tree::weight::Weight;
 
 use collection::Collection;
 
 /// `T` is able to be checksummed.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Hash)]
 pub struct CheckSum<T>(T);
 
 impl<T> CheckSum<T> {
@@ -20,7 +23,7 @@ impl<T> CheckSum<T> {
 }
 
 impl<T> Meta<T> for CheckSum<u64>
-    where T: Val + Hash
+    where T: Hash
 {
     fn from_t(t: &T) -> Self {
         let mut hasher = SeaHasher::new();
@@ -37,11 +40,26 @@ impl<T> Meta<T> for CheckSum<u64>
     }
 }
 
-impl<T, M> PartialEq for Collection<T, M>
-    where T: Val,
-          M: Meta<T> + SubMeta<CheckSum<u64>>
+impl<T, M, H, B> PartialEq for Collection<T, M, H, B>
+    where T: Weight + Freeze<H> + Clone,
+          M: Meta<T> + SubMeta<CheckSum<u64>>,
+          H: CryptoHash,
+          B: Backend<Node<T, M, H>, H>
 {
     fn eq(&self, other: &Self) -> bool {
-        self.stash.get(self.root) == other.stash.get(other.root)
+        let ma = self.meta();
+        let mb = other.meta();
+        ma.as_ref().map(|m| m.submeta()) == mb.as_ref().map(|m| m.submeta())
+    }
+}
+
+impl<T, M, H, B> Hash for Collection<T, M, H, B>
+    where T: Weight + Freeze<H> + Clone,
+          M: Meta<T> + SubMeta<CheckSum<u64>>,
+          H: CryptoHash,
+          B: Backend<Node<T, M, H>, H>
+{
+    fn hash<I: Hasher>(&self, state: &mut I) {
+        self.meta.as_ref().map(|m| m.submeta().hash(state));
     }
 }

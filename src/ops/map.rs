@@ -1,30 +1,29 @@
 use std::hash::Hash;
 use std::cmp::Ord;
-use std::ops::{Deref, DerefMut};
+use std::io::{self, Read};
+use std::borrow::Cow;
 
-use Val;
+use freezer::{WriteHashing, Freeze, CryptoHash, Deps, Backend};
 
-use collection::{Collection, MutContext};
+use collection::Collection;
 
 use meta::{Meta, SubMeta};
 use meta::key::{Key, KeySum, Keyed};
 
 use tree::branch::{Branch, BranchResult};
-use tree::level::{Beginning, End, Relative};
+use tree::level::{Beginning, End};
 use tree::weight::Weight;
+use tree::node::Node;
 
 /// A Key-Value pair
 #[derive(Clone, Debug)]
-pub struct KV<K, V>
-    where K: Val + Ord + PartialEq,
-          V: Clone
-{
+pub struct KV<K, V> {
     k: K,
     v: V,
 }
 
 impl<K, V> KV<K, V>
-    where K: Val + Ord + PartialEq,
+    where K: Weight + Ord + PartialEq,
           V: Clone
 {
     fn new(k: K, v: V) -> Self {
@@ -39,8 +38,7 @@ impl<K, V> KV<K, V>
 }
 
 impl<K, V> Keyed for KV<K, V>
-    where K: Val + Ord + PartialEq,
-          V: Clone
+    where K: Ord + Clone + Hash
 {
     type Key = K;
     type Value = V;
@@ -56,7 +54,7 @@ impl<K, V> Keyed for KV<K, V>
 }
 
 impl<K, V> Weight for KV<K, V>
-    where K: Val + Ord + PartialEq,
+    where K: Weight + Ord + PartialEq,
           V: Clone
 {
     fn weight_hash(&self) -> u64 {
@@ -64,42 +62,25 @@ impl<K, V> Weight for KV<K, V>
     }
 }
 
-pub struct ValContext<'a, T, M, R>
-    where T: 'a + Val + Keyed,
-          M: 'a + Meta<T>,
-          R: Relative
+impl<K, V, H> Freeze<H> for KV<K, V>
+    where K: Freeze<H>,
+          V: Freeze<H>,
+          H: CryptoHash
 {
-    context: MutContext<'a, T, M, R>,
-}
-
-impl<'a, T, M, R> ValContext<'a, T, M, R>
-    where T: 'a + Val + Keyed,
-          M: 'a + Meta<T>,
-          R: Relative
-{
-    pub fn new(context: MutContext<'a, T, M, R>) -> Self {
-        ValContext { context: context }
+    fn freeze(&self,
+              into: &mut WriteHashing<Digest = H::Digest>,
+              _: Deps<H>)
+              -> io::Result<H::Digest> {
+        Freeze::<H>::freeze(&self.k, into, Deps::none())?;
+        Freeze::<H>::freeze(&self.v, into, Deps::none())?;
+        Ok(into.fin())
     }
-}
 
-impl<'a, T, M, R> Deref for ValContext<'a, T, M, R>
-    where T: 'a + Val + Keyed,
-          M: 'a + Meta<T>,
-          R: Relative
-{
-    type Target = T::Value;
-    fn deref(&self) -> &Self::Target {
-        (*self.context).value()
-    }
-}
-
-impl<'a, T, M, R> DerefMut for ValContext<'a, T, M, R>
-    where T: 'a + Val + Keyed,
-          M: 'a + Meta<T>,
-          R: Relative
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.context.deref_mut().value_mut()
+    fn thaw(from: &mut Read) -> io::Result<Self> {
+        Ok(KV {
+               k: Freeze::<H>::thaw(from)?,
+               v: Freeze::<H>::thaw(from)?,
+           })
     }
 }
 
@@ -107,113 +88,127 @@ impl<'a, T, M, R> DerefMut for ValContext<'a, T, M, R>
 pub trait MapOps<K, V, M>
     where Self: Sized,
           M: Meta<KV<K, V>>,
-          K: Val + Ord,
+          K: Weight + Clone + Ord,
           V: Clone
 {
     /// Insert a value `V` at key `K`
-    fn insert(&mut self, key: K, V);
+    fn insert(&mut self, key: K, V) -> io::Result<()>;
     /// Remove value at key `K`
-    fn remove(&mut self, key: K) -> Option<V>;
+    fn remove(&mut self, key: K) -> io::Result<Option<V>>;
     /// Get a reference to the value at key `K`
-    fn get(&self, key: K) -> Option<&V>;
-    /// Get a mutable reference to the value at key `K`
-    fn get_mut(&mut self,
-               key: K)
-               -> Option<ValContext<KV<K, V>, M, Beginning>>;
+    fn get(&self, key: K) -> io::Result<Option<Cow<V>>>;
+    /// Mutate the value at key `K` with function F
+    fn mutate<F>(&mut self, key: K, f: F) -> io::Result<Option<()>>
+        where F: FnOnce(&mut V);
 }
 
 /// Operations on a map with `KeySum` metadata
 pub trait MapOpsKeySum<K, V, M>
     where Self: MapOps<K, V, M>,
           M: Meta<KV<K, V>>,
-          K: Val + Ord,
+          K: Weight + Clone + Ord,
           V: Clone
 {
     /// Merge two maps, overwriting values from `self` with `b`
-    fn merge(&mut self, b: &mut Self) -> Self;
+    fn merge(&mut self, b: &mut Self) -> io::Result<Self>;
 }
 
-impl<K, V, M> MapOps<K, V, M> for Collection<KV<K, V>, M>
-    where M: Meta<KV<K, V>> + SubMeta<Key<K>>,
-          K: Val + Ord,
-          V: Clone
+impl<K, V, M, H, B> MapOps<K, V, M> for Collection<KV<K, V>, M, H, B>
+    where H: CryptoHash,
+          M: Meta<KV<K, V>> + SubMeta<Key<K>>,
+          K: Hash + Ord + Clone + Freeze<H>,
+          B: Backend<Node<KV<K, V>, M, H>, H>,
+          V: Clone + Freeze<H>
 {
-    fn insert(&mut self, key: K, val: V) {
+    fn insert(&mut self, key: K, val: V) -> io::Result<()> {
         let mut search = Key::new(key.clone());
-        let branch = Branch::<_, _, Beginning>::new_full(self.root,
-                                                         &mut search,
-                                                         &self.stash);
+        let branch =
+            Branch::<_, _, Beginning, _, _>::new_full(self.root.clone(),
+                                                      &mut search,
+                                                      &self.freezer)?;
         match branch {
             BranchResult::Between(mut b) => {
-                b.insert(KV::new(key, val), self.divisor, &mut self.stash);
-                self.root = b.root();
+                b.insert(KV::new(key, val), self.divisor, &mut self.freezer)?;
+                self.new_root(b.into_root())?;
             }
             // Already there, overwrite
             BranchResult::Hit(mut b) => {
-                b.update(KV::new(key, val), &mut self.stash);
-                self.root = b.root();
+                b.update(KV::new(key, val), &mut self.freezer)?;
+                self.new_root(b.into_root())?;
             }
             // At the very end
             BranchResult::Miss => {
-                let mut branch: Branch<_, _, End> = Branch::first(self.root,
-                                                                  &self.stash);
-                branch.insert(KV::new(key, val), self.divisor, &mut self.stash);
-                self.root = branch.root();
+                let mut branch: Branch<_, _, End, _, _> =
+                    Branch::first(self.root.clone(), &self.freezer)?;
+                branch.insert(KV::new(key, val),
+                              self.divisor,
+                              &mut self.freezer)?;
+                self.new_root(branch.into_root())?;
             }
         }
+        Ok(())
     }
 
-    fn remove(&mut self, key: K) -> Option<V> {
+    fn remove(&mut self, key: K) -> io::Result<Option<V>> {
         let mut key = Key::new(key);
 
-        let branch = Branch::<_, _, Beginning>::new_full(self.root,
-                                                         &mut key,
-                                                         &self.stash);
+        let branch =
+            Branch::<_, _, Beginning, _, _>::new_full(self.root.clone(),
+                                                      &mut key,
+                                                      &self.freezer)?;
         match branch {
             BranchResult::Between(_) |
-            BranchResult::Miss => None,
+            BranchResult::Miss => Ok(None),
             BranchResult::Hit(mut b) => {
-                let res = b.remove(self.divisor, &mut self.stash);
-                self.root = b.root();
-                res.map(|kv| kv.into_val())
+                let res = b.remove(self.divisor, &mut self.freezer);
+                self.new_root(b.into_root())?;
+                Ok(res?.map(|kv| kv.into_val()))
             }
         }
     }
 
-    fn get(&self, key: K) -> Option<&V> {
+    fn get(&self, key: K) -> io::Result<Option<Cow<V>>> {
         let mut key = Key::new(key);
-        let res: BranchResult<_, _, Beginning> =
-            Branch::new_full(self.root, &mut key, &self.stash);
+        let res: BranchResult<_, _, Beginning, _, _> =
+            Branch::new_full(self.root.clone(), &mut key, &self.freezer)?;
 
         match res {
             BranchResult::Hit(branch) => {
-                branch.leaf(&self.stash).map(|l| l.val())
+                Ok(branch.leaf(&self.freezer)?.map(|l| match l {
+                    Cow::Owned(leaf) => Cow::Owned(leaf.into_val()),
+                    Cow::Borrowed(ref leaf) => Cow::Borrowed(leaf.val()),
+                }))
             }
-            _ => None,
+            _ => Ok(None),
         }
     }
 
-    fn get_mut(&mut self,
-               key: K)
-               -> Option<ValContext<KV<K, V>, M, Beginning>> {
+    fn mutate<F>(&mut self, key: K, f: F) -> io::Result<Option<()>>
+        where F: FnOnce(&mut V)
+    {
         let mut key = Key::new(key);
-        let res: BranchResult<_, _, Beginning> =
-            Branch::new_full(self.root, &mut key, &self.stash);
+        let res: BranchResult<_, _, Beginning, _, _> =
+            Branch::new_full(self.root.clone(), &mut key, &self.freezer)?;
 
-        if let BranchResult::Hit(branch) = res {
-            Some(ValContext::new(self.mut_context(branch)))
+        if let BranchResult::Hit(mut branch) = res {
+            branch.leaf_mut(&mut self.freezer)?.map(|kv| f(kv.value_mut()));
+            branch.propagate(&mut self.freezer)?;
+            self.new_root(branch.into_root())?;
+            Ok(Some(()))
         } else {
-            None
+            Ok(None)
         }
     }
 }
 
-impl<K, V, M> MapOpsKeySum<K, V, M> for Collection<KV<K, V>, M>
-    where M: Meta<KV<K, V>> + SubMeta<Key<K>> + SubMeta<KeySum<u64>>,
-          K: Val + Ord + Hash,
-          V: Clone
+impl<K, V, M, H, B> MapOpsKeySum<K, V, M> for Collection<KV<K, V>, M, H, B>
+    where H: CryptoHash,
+          M: Meta<KV<K, V>> + SubMeta<Key<K>> + SubMeta<KeySum<u64>>,
+          K: Hash + Ord + Clone + Freeze<H>,
+          V: Clone + Freeze<H>,
+          B: Backend<Node<KV<K, V>, M, H>, H>
 {
-    fn merge(&mut self, b: &mut Self) -> Self {
+    fn merge(&mut self, b: &mut Self) -> io::Result<Self> {
         self.union_using::<Key<K>, KeySum<u64>>(b)
     }
 }
@@ -222,18 +217,19 @@ impl<K, V, M> MapOpsKeySum<K, V, M> for Collection<KV<K, V>, M>
 mod tests {
     extern crate rand;
 
-    const LOTS: usize = 100_000;
+    use test_common::LOTS;
 
     use std::hash::Hash;
 
     use meta::key::{Key, Keyed, KeySum, ValSum};
+    use freezer::VoidHash;
 
     use collection::Collection;
 
     use super::MapOps;
     use super::MapOpsKeySum;
 
-    collection!(Map<T> {
+    collection!(Map<T, VoidHash> {
         key: Key<T::Key>,
         keysum: KeySum<u64>,
         valsum: ValSum<u64>,
@@ -241,24 +237,24 @@ mod tests {
 
     #[test]
     fn insert() {
-        let mut map = Map::new();
-        map.insert("a", 1);
-        assert_eq!(map.get("a"), Some(&1));
+        let mut map = Map::new(());
+        map.insert(1, 1).unwrap();
+        assert_eq!(*map.get(1).unwrap().unwrap(), 1);
     }
 
     #[test]
     fn partial_eq() {
-        let mut a = Map::new();
-        let mut b = Map::new();
+        let mut a = Map::new(());
+        let mut b = Map::new(());
 
         for i in 0..LOTS {
-            a.insert(i, i + 1);
-            b.insert(LOTS - i - 1, LOTS - i - 1);
+            a.insert(i, i + 1).unwrap();
+            b.insert(LOTS - i - 1, LOTS - i - 1).unwrap();
         }
 
         // mutate in a
         for i in 0..LOTS {
-            a.get_mut(i).map(|mut v| *v -= 1);
+            a.mutate(i, |val| *val -= 1).unwrap();
         }
 
         assert!(a == b);
@@ -266,50 +262,67 @@ mod tests {
 
     #[test]
     fn overwrite() {
-        let mut map = Map::new();
+        let mut map = Map::new(());
 
-        map.insert("a", 1);
-        assert_eq!(map.get("a"), Some(&1));
-        map.insert("a", 2);
-        assert_eq!(map.get("a"), Some(&2));
+        map.insert(1, 1).unwrap();
+        assert_eq!(*map.get(1).unwrap().unwrap(), 1);
+        map.insert(1, 2).unwrap();
+        assert_eq!(*map.get(1).unwrap().unwrap(), 2);
     }
 
     #[test]
     fn clone() {
-        let mut a = Map::new();
+        let mut a = Map::new(());
 
-        a.insert("a", 1);
+        a.insert(1, 1).unwrap();
 
-        let mut b = a.clone_mut();
+        let mut b = a.clone();
 
-        b.insert("a", 2);
+        b.insert(1, 2).unwrap();
 
-        assert_eq!(a.get("a"), Some(&1));
-        assert_eq!(b.get("a"), Some(&2));
+        assert_eq!(*a.get(1).unwrap().unwrap(), 1);
+        assert_eq!(*b.get(1).unwrap().unwrap(), 2);
     }
 
     #[test]
     fn merge() {
-        let mut a = Map::new();
-        let mut b = Map::new();
+        let mut a = Map::new(());
+        let mut b = Map::new(());
 
-        a.insert("a", 1);
-        b.insert("a", 1);
+        a.insert(1, 1).unwrap();
+        b.insert(1, 1).unwrap();
 
-        a.insert("b", 2);
-        b.insert("b", 3);
+        a.insert(2, 2).unwrap();
+        b.insert(2, 3).unwrap();
 
-        b.insert("c", 4);
+        b.insert(3, 4).unwrap();
 
-        let am = a.merge(&mut b);
-        let bm = b.merge(&mut a);
+        let am = a.merge(&mut b).unwrap();
+        let bm = b.merge(&mut a).unwrap();
 
-        assert_eq!(am.get("a"), Some(&1));
-        assert_eq!(am.get("b"), Some(&3));
-        assert_eq!(am.get("c"), Some(&4));
+        assert_eq!(*am.get(1).unwrap().unwrap(), 1);
+        assert_eq!(*am.get(2).unwrap().unwrap(), 3);
+        assert_eq!(*am.get(3).unwrap().unwrap(), 4);
 
-        assert_eq!(bm.get("a"), Some(&1));
-        assert_eq!(bm.get("b"), Some(&2));
-        assert_eq!(bm.get("c"), Some(&4));
+        assert_eq!(*bm.get(1).unwrap().unwrap(), 1);
+        assert_eq!(*bm.get(2).unwrap().unwrap(), 2);
+        assert_eq!(*bm.get(3).unwrap().unwrap(), 4);
+    }
+
+    #[test]
+    fn nesting() {
+        let mut a = Map::new(());
+        let mut b = Map::new(());
+
+        b.insert(0, 0).unwrap();
+        a.insert(0, b).unwrap();
+
+        assert_eq!(*a.get(0)
+                   .unwrap()
+                   .unwrap()
+                   .get(0)
+                   .unwrap()
+                   .unwrap(),
+                   0)
     }
 }

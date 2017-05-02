@@ -1,14 +1,17 @@
 [package]
 authors = ["Kristoffer Ström <kristoffer@rymdkoloni.se>"]
-name = "collection"
-version = "0.1.2"
-license = "GPL-3.0"
 description = "Deterministic, copy-on-write balanced search trees"
-
 documentation = "https://krl.github.io/collection/doc/collection/index.html"
+license = "GPL-3.0"
+name = "collection"
 repository = "https://github.com/krl/collection"
+version = "0.1.2"
 
 [dependencies]
 rand = "0.3.15"
 seahash = "3.0.4"
 trait-group = "0.1.0"
+
+[dependencies.freezer]
+optional = false
+path = "../freezer"

@@ -1,14 +1,13 @@
 use std::marker::PhantomData;
 use std::borrow::Cow;
 
-use Val;
 use meta::{Meta, Select, Selection};
 
 #[derive(Clone, PartialEq)]
 pub struct Cardinality<T>(T);
 
 impl<T> Cardinality<T>
-    where T: Val
+    where T: Clone
 {
     pub fn new(t: &T) -> Self {
         Cardinality(t.clone())
@@ -19,9 +18,7 @@ impl<T> Cardinality<T>
     }
 }
 
-impl<T> Meta<T> for Cardinality<usize>
-    where T: Val
-{
+impl<T> Meta<T> for Cardinality<usize> {
     fn from_t(_: &T) -> Self {
         Cardinality(1)
     }
@@ -31,9 +28,7 @@ impl<T> Meta<T> for Cardinality<usize>
     }
 }
 
-impl<T> Select<T> for Cardinality<usize>
-    where T: Val
-{
+impl<T> Select<T> for Cardinality<usize> {
     fn select(&mut self, other: Cow<Self>) -> Selection {
         if self.0 < other.0 {
             Selection::Hit

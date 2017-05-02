@@ -1,134 +1,87 @@
-use Val;
+use std::io::{self, Read};
 
-use std::fmt;
-use std::ops::{Deref, DerefMut};
-
-use html::{Html, CSS};
 use meta::{Meta, SubMeta, Select};
-use stash::{Location, Stash};
+use freezer::{Location, Backend, CryptoHash};
+use freezer::{Freeze, Freezer, WriteHashing, Deps};
+use tree::weight::Weight;
 use tree::node::Node;
 use tree::branch::Branch;
-use tree::level::{Beginning, End, Relative};
-
+use tree::level::{Beginning, End};
 
 /// A collection of elements of type T,
 /// with metadata of type M.
 ///
 /// This is the base type, that all the collection operations
 /// are implemented over.
-pub struct Collection<T, M>
-    where T: Val,
-          M: Meta<T>
+pub struct Collection<T, M, H, B>
+    where H: CryptoHash
 {
-    /// The location on the stash that constitutes the root for this collection.
-    pub root: Location<T, M>,
-    /// The store for values of type Node<T, M>
-    pub stash: Stash<T, M>,
+    /// The location that constitutes the root for this collection.
+    pub root: Location<H>,
+    /// Top level metadata
+    pub meta: Option<M>,
+    /// The store for nodes
+    pub freezer: Freezer<Node<T, M, H>, H, B>,
     /// The branching factor, currently hard-coded to 2, which means on average
     /// every fourth element will have weight > 0.
     pub divisor: usize,
 }
 
-/// A view into a Collection, being able to act as a &mut T wrapper.
-///
-/// When this type dhrops, the collection will be re-balanced as neccesary.
-pub struct MutContext<'a, T, M, R>
-    where T: 'a + Val,
-          M: 'a + Meta<T>,
-          R: Relative
-{
-    /// The branch into the Collection, pointing at a value T
-    branch: Branch<T, M, R>,
-    /// A mutable reference to the root of the Collection this branch was
-    root: &'a mut Location<T, M>,
-    /// The stash of the parent Collection
-    stash: &'a mut Stash<T, M>,
-    /// The divisor from parent.
-    divisor: usize,
-    /// The weight of the element pointed at, pre-mutation.
-    weight: usize,
-}
-
-impl<'a, T, M, R> Deref for MutContext<'a, T, M, R>
-    where T: 'a + Val,
-          M: 'a + Meta<T>,
-          R: Relative
-{
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.branch.leaf(self.stash).expect("Invalid context")
-    }
-}
-
-impl<'a, T, M, R> DerefMut for MutContext<'a, T, M, R>
-    where T: 'a + Val,
-          M: 'a + Meta<T>,
-          R: Relative
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.branch.leaf_mut(self.stash).expect("Invalid context")
-    }
-}
-
-impl<'a, T, M, R> Drop for MutContext<'a, T, M, R>
-    where T: 'a + Val,
-          M: 'a + Meta<T>,
-          R: Relative
-{
-    fn drop(&mut self) {
-        let new_weight = self.branch
-            .leaf(self.stash)
-            .expect("Invalid context")
-            .weight();
-
-        self.branch.rebalance(self.weight / self.divisor,
-                              new_weight / self.divisor,
-                              self.stash);
-        *self.root = self.branch.root();
-    }
-}
-
-impl<T, M> Collection<T, M>
-    where T: Val,
-          M: Meta<T>
+impl<T, M, H, B> Collection<T, M, H, B>
+    where T: Weight + Freeze<H> + Clone,
+          M: Meta<T>,
+          H: CryptoHash,
+          B: Backend<Node<T, M, H>, H>
 {
     /// Returns a new, empty Collection.
-    pub fn new() -> Self {
-        let mut stash = Stash::new();
-        let root = stash.put(Node::new());
+    pub fn new(backend: B) -> Self {
+        let freezer = Freezer::new(backend);
+        let root = freezer.put(Node::new());
         Collection {
-            root: root,
-            stash: stash,
+            root,
+            freezer,
+            meta: None,
+            // hard-coded for now
             divisor: 2,
         }
     }
 
-    /// Constructs a Collection given a root and a stash
-    pub fn new_from(root: Location<T, M>, stash: Stash<T, M>) -> Self {
+    /// Constructs a Collection given a root, and a freezer
+    pub fn new_from(root: Location<H>,
+                    freezer: Freezer<Node<T, M, H>, H, B>)
+                    -> io::Result<Self> {
+        Ok(Collection {
+               meta: freezer.get(&root)?
+                   .meta()
+                   .map(|m| m.into_owned()),
+               root,
+               freezer,
+               divisor: 2,
+           })
+    }
+
+    /// Constructs a Collection given a freezer
+    pub fn with_freezer(freezer: Freezer<Node<T, M, H>, H, B>) -> Self {
+        let root = freezer.put(Node::new());
         Collection {
-            root: root,
-            stash: stash,
+            root,
+            freezer,
+            meta: None,
             divisor: 2,
         }
     }
 
-    /// Produces a html representation of this Collection. For debug use only.
-    pub fn _html(&self) -> String
-        where T: fmt::Debug
-    {
-        format!("<style>{}</style>{}",
-                CSS,
-                self.root._html(self.stash.top()))
+    pub fn meta(&self) -> &Option<M> {
+        &self.meta
     }
 
-    /// Clones the collection, mutating self
-    pub fn clone_mut(&mut self) -> Self {
-        let new_stash = self.stash.clone_mut(&mut self.root);
-        Collection {
-            stash: new_stash,
-            root: self.root,
-            divisor: self.divisor,
-        }
+    pub fn new_root(&mut self, loc: Location<H>) -> io::Result<()> {
+        self.meta = self.freezer
+            .get(&loc)?
+            .meta()
+            .map(|m| m.into_owned());
+        self.root = loc;
+        Ok(())
     }
 
     /// Returns a new, cloned collection that is the result of a union operation
@@ -143,74 +96,79 @@ impl<T, M> Collection<T, M>
     ///
     /// When the equality testing succeeds, elements will be picked from
     /// the Collection `b`.
-    pub fn union_using<F, E>(&mut self, b: &mut Self) -> Self
+    pub fn union_using<F, E>(&mut self, b: &mut Self) -> io::Result<Self>
         where F: Meta<T> + Select<T> + PartialEq + Ord,
               E: Meta<T> + PartialEq,
-              M: SubMeta<F> + SubMeta<E>
+              M: SubMeta<F> + SubMeta<E>,
+              B: Backend<Node<T, M, H>, H> + Clone
     {
-        let a = self.clone_mut();
+        let a = self.clone();
 
-        let mut stash =
-            self.stash.merge(&mut self.root, &mut b.root, &mut b.stash);
+        self.freezer.merge(&mut b.freezer);
 
-        let mut branch_a: Branch<_, _, Beginning> = Branch::first(a.root,
-                                                                  &stash);
-        let mut branch_b: Branch<_, _, Beginning> = Branch::first(b.root,
-                                                                  &stash);
+        let mut branch_a: Branch<_, _, Beginning, _, _> =
+            Branch::first(a.root.clone(), &self.freezer)?;
+        let mut branch_b: Branch<_, _, Beginning, _, _> =
+            Branch::first(b.root.clone(), &self.freezer)?;
         // Branch into union, being constructed as we go
-        let mut branch_c: Option<Branch<_, _, End>> = None;
+        let mut branch_c: Option<Branch<_, _, End, _, _>> = None;
 
-        fn a_b<T, M, F, E>(from: &mut Branch<T, M, Beginning>,
-                           into: &mut Option<Branch<T, M, End>>,
-                           divisor: usize,
-                           mut key: F,
-                           stash: &mut Stash<T, M>)
-            where T: Val,
+        fn a_b<T, M, F, E, H, B>(from: &mut Branch<T, M, Beginning, H, B>,
+                                 into: &mut Option<Branch<T, M, End, H, B>>,
+                                 divisor: usize,
+                                 mut key: F,
+                                 freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                                 -> io::Result<()>
+            where T: Weight + Freeze<H> + Clone,
                   F: Meta<T> + Select<T> + PartialEq + Ord,
                   E: Meta<T> + PartialEq,
-                  M: Meta<T> + SubMeta<F> + SubMeta<E>
+                  M: Meta<T> + SubMeta<F> + SubMeta<E>,
+                  B: Backend<Node<T, M, H>, H>,
+                  H: CryptoHash
         {
-            from.find_full(&mut key, stash);
+            from.find_full(&mut key, freezer)?;
 
-            let left = from.left(stash);
-            *from = from.right(stash);
+            let left = from.left(freezer)?;
+            *from = from.right(freezer)?;
 
             if into.is_some() {
                 *into = Some(into.as_ref()
                                  .expect("is some")
-                                 .concat(&left.reverse(&stash),
+                                 .concat(&left.reverse(&freezer)?,
                                          divisor,
-                                         stash));
+                                         freezer)?);
+                Ok(())
             } else {
-                *into = Some(left)
+                *into = Some(left);
+                Ok(())
             }
         }
 
         loop {
-            let keys = (branch_a.leaf(&stash).map(|t| F::from_t(t)),
-                        branch_b.leaf(&stash).map(|t| F::from_t(t)));
+            let keys = (branch_a.leaf(&self.freezer)?.map(|t| F::from_t(&*t)),
+                        branch_b.leaf(&self.freezer)?.map(|t| F::from_t(&*t)));
             match keys {
                 (Some(a), Some(b)) => {
                     if a == b {
-                        branch_a.skip_equal::<E>(&mut branch_b, &stash);
-                        a_b::<_, _, F, E>(&mut branch_b,
-                                          &mut branch_c,
-                                          self.divisor,
-                                          a,
-                                          &mut stash);
-                        branch_a = branch_a.right(&mut stash);
+                        branch_a.skip_equal::<E>(&mut branch_b, &self.freezer)?;
+                        a_b::<_, _, F, E, _, _>(&mut branch_b,
+                                                &mut branch_c,
+                                                self.divisor,
+                                                a,
+                                                &mut self.freezer)?;
+                        branch_a = branch_a.right(&mut self.freezer)?;
                     } else if a > b {
-                        a_b::<_, _, F, E>(&mut branch_b,
-                                          &mut branch_c,
-                                          self.divisor,
-                                          a,
-                                          &mut stash);
+                        a_b::<_, _, F, E, _, _>(&mut branch_b,
+                                                &mut branch_c,
+                                                self.divisor,
+                                                a,
+                                                &mut self.freezer)?;
                     } else {
-                        a_b::<_, _, F, E>(&mut branch_a,
-                                          &mut branch_c,
-                                          self.divisor,
-                                          b,
-                                          &mut stash);
+                        a_b::<_, _, F, E, _, _>(&mut branch_a,
+                                                &mut branch_c,
+                                                self.divisor,
+                                                b,
+                                                &mut self.freezer)?;
                     }
                 }
                 (None, Some(_)) => {
@@ -220,9 +178,9 @@ impl<T, M> Collection<T, M>
                                             .expect("is some")
                                             .concat(&branch_b,
                                                     self.divisor,
-                                                    &mut stash));
+                                                    &mut self.freezer)?);
                     } else {
-                        branch_c = Some(branch_b.reverse(&stash))
+                        branch_c = Some(branch_b.reverse(&self.freezer)?)
                     }
                     break;
                 }
@@ -233,9 +191,9 @@ impl<T, M> Collection<T, M>
                                             .expect("is some")
                                             .concat(&branch_a,
                                                     self.divisor,
-                                                    &mut stash));
+                                                    &mut self.freezer)?);
                     } else {
-                        branch_c = Some(branch_a.reverse(&stash))
+                        branch_c = Some(branch_a.reverse(&self.freezer)?)
                     }
                     break;
                 }
@@ -243,26 +201,42 @@ impl<T, M> Collection<T, M>
             }
         }
         match branch_c {
-            None => Self::new(),
+            None => {
+                Ok(Collection {
+                       root: self.freezer.put(Node::new()),
+                       freezer: self.freezer.clone(),
+                       meta: None,
+                       divisor: self.divisor,
+                   })
+            }
             Some(branch) => {
-                Collection {
-                    root: branch.root(),
-                    stash: stash,
-                    divisor: self.divisor,
-                }
+                let root = branch.into_root();
+                Ok(Collection {
+                       meta: self.freezer
+                           .get(&root)?
+                           .meta()
+                           .map(|m| m.into_owned()),
+                       root: root,
+                       freezer: self.freezer.clone(),
+                       divisor: self.divisor,
+                   })
             }
         }
     }
+}
 
-    /// Constructs a MutContext context, given a branch into the Collection.
-    pub fn mut_context<R: Relative>(&mut self,
-                                    branch: Branch<T, M, R>)
-                                    -> MutContext<T, M, R> {
-        MutContext {
-            weight: branch.leaf(&self.stash).expect("Invalid context").weight(),
-            branch: branch,
-            root: &mut self.root,
-            stash: &mut self.stash,
+
+impl<T, M, H, B> Clone for Collection<T, M, H, B>
+    where H: CryptoHash,
+          T: Clone,
+          M: Clone,
+          B: Backend<Node<T, M, H>, H> + Clone
+{
+    fn clone(&self) -> Self {
+        Collection {
+            freezer: self.freezer.clone(),
+            root: self.root.clone(),
+            meta: self.meta.clone(),
             divisor: self.divisor,
         }
     }
@@ -270,29 +244,51 @@ impl<T, M> Collection<T, M>
 
 #[macro_export]
 macro_rules! collection {
-    ($collection:ident<$t:ident>
+    ($collection:ident<$t:ident, $h:ty>
      {
          $( $slot:ident: $submeta:ident<$subtype:ty>, )*
      } where $($restraints:tt)*) => (
         mod col {
             use std::marker::PhantomData;
             use std::borrow::Cow;
-            use Val;
+            use std::io::{self, Read};
+            use tree::weight::Weight;
+            use tree::node::Node;
+            use freezer::{Freeze, CryptoHash, Backend, WriteHashing, Deps};
             use meta::{Meta, SubMeta};
 
             use super::*;
 
             #[derive(Clone)]
-                pub struct CollectionMeta<$t> where $t: Val, $($restraints)*
-            {
+            pub struct CollectionMeta<$t>
+                where $t: Clone, $($restraints)* {
                 _t: PhantomData<$t>,
                 $(
                     $slot: $submeta<$subtype>,
                 )*
             }
 
-            impl<$t> Meta<$t> for CollectionMeta<$t> where $t: Val, $($restraints)* {
-                    fn from_t(t: &$t) -> Self {
+            impl<T, H> Freeze<H> for CollectionMeta<T>
+                where T: Weight + Freeze<H>,
+                <H as CryptoHash>::Digest: Freeze<H>,
+                      H: CryptoHash, $($restraints)*
+            {
+                fn freeze(&self,
+                          into: &mut WriteHashing<Digest = H::Digest>,
+                          deps: Deps<H>)
+                          -> io::Result<H::Digest> {
+                    Ok(into.fin())
+                }
+
+                fn thaw(from: &mut Read) -> io::Result<Self> {
+                    panic!()
+                }
+            }
+
+            impl<$t> Meta<$t> for CollectionMeta<$t>
+                where $t: Clone, $($restraints)*
+            {
+                fn from_t(t: &$t) -> Self {
                         CollectionMeta {
                             _t: PhantomData,
                             $(
@@ -307,10 +303,11 @@ macro_rules! collection {
                     }
                 }
 
-            macro_rules! as_ref {
+            macro_rules! submeta {
                 ($_submeta:ident, $_subtype:ty, $_slot:ident) => (
                     impl<'a, $t> SubMeta<$_submeta<$_subtype>>
-                        for CollectionMeta<T> where $t: Val, $($restraints)*
+                        for CollectionMeta<T>
+                        where $t: Clone, $($restraints)*
                     {
                         fn submeta(&self) -> Cow<$_submeta<$_subtype>> {
                             Cow::Borrowed(&self.$_slot)
@@ -320,10 +317,30 @@ macro_rules! collection {
             }
 
             $(
-                as_ref!($submeta, $subtype, $slot);
+                submeta!($submeta, $subtype, $slot);
             )*
         }
 
-        pub type $collection<T> = Collection<T, self::col::CollectionMeta<T>>;
+        pub type $collection<T, B> =
+            Collection<T, self::col::CollectionMeta<T>, $h, B>;
     )
+}
+
+impl<T, M, H, B> Freeze<H> for Collection<T, M, H, B>
+    where T: Weight + Freeze<H>,
+          <H as CryptoHash>::Digest: Freeze<H>,
+          M: Meta<T> + Freeze<H>,
+          H: CryptoHash,
+          B: Backend<Node<T, M, H>, H> + Clone
+{
+    fn freeze(&self,
+              into: &mut WriteHashing<Digest = H::Digest>,
+              deps: Deps<H>)
+              -> io::Result<H::Digest> {
+        Ok(into.fin())
+    }
+
+    fn thaw(from: &mut Read) -> io::Result<Self> {
+        panic!()
+    }
 }

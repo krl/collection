@@ -5,15 +5,15 @@ use std::hash::{Hash, Hasher};
 
 use std::borrow::Cow;
 
-use Val;
 use meta::{Meta, SubMeta, Select, Selection};
+use tree::weight::Weight;
 
 use meta::checksum::CheckSum;
 
 /// This `T` can be viewed as a Key-Value pair.
 pub trait Keyed {
-    type Key: Val + Ord;
-    type Value: Clone;
+    type Key: Weight + Ord + Clone;
+    type Value;
 
     fn key(&self) -> &Self::Key;
     fn value(&self) -> &Self::Value;
@@ -48,7 +48,7 @@ impl<K> Key<K> {
 }
 
 impl<T> Meta<T> for Key<T::Key>
-    where T: Val + Keyed
+    where T: Keyed
 {
     fn from_t(t: &T) -> Self {
         Key(t.key().clone())
@@ -61,7 +61,7 @@ impl<T> Meta<T> for Key<T::Key>
 }
 
 impl<T> Select<T> for Key<T::Key>
-    where T: Val + Keyed
+    where T: Keyed
 {
     fn select(&mut self, other: Cow<Self>) -> Selection {
         if self.0 == other.0 {
@@ -75,7 +75,7 @@ impl<T> Select<T> for Key<T::Key>
 }
 
 impl<T> Meta<T> for KeySum<u64>
-    where T: Val + Keyed,
+    where T: Keyed,
           T::Key: Hash
 {
     fn from_t(t: &T) -> Self {
@@ -91,7 +91,7 @@ impl<T> Meta<T> for KeySum<u64>
 }
 
 impl<T> Meta<T> for ValSum<u64>
-    where T: Val + Keyed,
+    where T: Keyed,
           T::Value: Hash
 {
     fn from_t(t: &T) -> Self {

@@ -1,39 +1,35 @@
-use std::fmt;
 use std::cmp;
+use std::io;
 
 use std::borrow::Cow;
 
-use Val;
+use freezer::{Freeze, Location, CryptoHash, Backend};
+use freezer::freezer::Freezer;
 
+use tree::weight::Weight;
 use tree::node::{Node, Child, RemoveResult, InsertResult};
-use stash::{Stash, RelStash, Location};
 use tree::level::{Level, Relative, Opposite, Beginning, End};
 use meta::{Meta, Select, Selection, Found, SubMeta};
 
-use html::Html;
-
-pub struct Branch<T, M, R>
-    where T: Val,
-          M: Meta<T>,
-          R: Relative
+pub struct Branch<T, M, R, H, B>
+    where H: CryptoHash
 {
-    levels: Vec<Level<T, M, R>>,
+    levels: Vec<Level<T, M, R, H, B>>,
 }
 
-pub enum BranchResult<T, M, R>
-    where T: Val,
-          M: Meta<T>,
-          R: Relative
+pub enum BranchResult<T, M, R, H, B>
+    where H: CryptoHash
 {
     Miss,
-    Hit(Branch<T, M, R>),
-    Between(Branch<T, M, R>),
+    Hit(Branch<T, M, R, H, B>),
+    Between(Branch<T, M, R, H, B>),
 }
 
-impl<T, M, R> Clone for Branch<T, M, R>
-    where T: Val,
+impl<T, M, R, H, B> Clone for Branch<T, M, R, H, B>
+    where T: Weight + Freeze<H> + Clone,
           M: Meta<T>,
-          R: Relative
+          R: Relative,
+          H: CryptoHash
 {
     fn clone(&self) -> Self {
         Branch {
@@ -45,89 +41,101 @@ impl<T, M, R> Clone for Branch<T, M, R>
     }
 }
 
-impl<T, M, R> Branch<T, M, R>
-    where T: Val,
-          M: Meta<T>,
-          R: Relative
+impl<T, M, R, H, B> Branch<T, M, R, H, B>
+    where T: Weight + Freeze<H>,
+          H: CryptoHash,
+          M: Meta<T> + Clone,
+          R: Relative,
+          B: Backend<Node<T, M, H>, H>
 {
-    pub fn new(root: Location<T, M>) -> Branch<T, M, R> {
+    pub fn new(root: Location<H>) -> Branch<T, M, R, H, B> {
         Branch { levels: vec![Level::new(root)] }
     }
 
-    pub fn first(root: Location<T, M>, stash: &Stash<T, M>) -> Self {
+    pub fn first(root: Location<H>,
+                 freezer: &Freezer<Node<T, M, H>, H, B>)
+                 -> io::Result<Self> {
         let mut branch = Branch::new(root);
-        branch.extend(stash);
-        branch
+        branch.extend(freezer)?;
+        Ok(branch)
     }
 
-    fn empty(&self, stash: &Stash<T, M>) -> bool {
-        stash.get(self.root()).len() == 0
+    fn empty(&self,
+             freezer: &Freezer<Node<T, M, H>, H, B>)
+             -> io::Result<bool> {
+        Ok(freezer.get(self.root())?.len() == 0)
     }
 
-    fn from_levels(levels: Vec<Level<T, M, R>>) -> Branch<T, M, R> {
+    fn from_levels(levels: Vec<Level<T, M, R, H, B>>) -> Branch<T, M, R, H, B> {
         Branch { levels: levels }
     }
 
     fn level_meta<'a>(&self,
                       from_bottom: usize,
-                      stash: &'a Stash<T, M>)
-                      -> Option<Cow<'a, M>> {
+                      freezer: &'a Freezer<Node<T, M, H>, H, B>)
+                      -> io::Result<Option<Cow<'a, M>>> {
         // TODO: re-use cached meta when available
         if from_bottom >= self.depth() {
-            None
+            Ok(None)
         } else {
             let at = self.depth() - from_bottom - 1;
-            let node = stash.get(self.levels[at].location());
-            node.meta()
+            let node = freezer.get(self.levels[at].location())?;
+            match node {
+                Cow::Owned(node) => {
+                    Ok(node.into_meta().map(|meta| Cow::Owned(meta)))
+                }
+                Cow::Borrowed(node) => Ok(node.meta()),
+            }
         }
     }
 
-    pub fn new_full<S>(root: Location<T, M>,
+    pub fn new_full<S>(root: Location<H>,
                        search: &mut S,
-                       stash: &Stash<T, M>)
-                       -> BranchResult<T, M, R>
+                       freezer: &Freezer<Node<T, M, H>, H, B>)
+                       -> io::Result<BranchResult<T, M, R, H, B>>
         where S: Select<T> + Meta<T>,
               M: SubMeta<S>
     {
         let mut branch = Self::new(root);
-        match branch.find_full(search, stash) {
-            Selection::Miss => BranchResult::Miss,
-            Selection::Hit => BranchResult::Hit(branch),
-            Selection::Between => BranchResult::Between(branch),
-        }
-
-        //panic!()
+        Ok(match branch.find_full(search, freezer)? {
+               Selection::Miss => BranchResult::Miss,
+               Selection::Hit => BranchResult::Hit(branch),
+               Selection::Between => BranchResult::Between(branch),
+           })
     }
 
-    fn find<S>(&mut self, search: &mut S, stash: &Stash<T, M>) -> Found<T, M>
+    fn find<S>(&mut self,
+               search: &mut S,
+               freezer: &Freezer<Node<T, M, H>, H, B>)
+               -> io::Result<Found<H>>
         where S: Meta<T> + Select<T>,
               M: SubMeta<S>
     {
-        self.bottom_mut().find(search, stash)
+        self.bottom_mut().find(search, freezer)
     }
 
     pub fn find_full<S>(&mut self,
                         search: &mut S,
-                        stash: &Stash<T, M>)
-                        -> Selection
+                        freezer: &Freezer<Node<T, M, H>, H, B>)
+                        -> io::Result<Selection>
         where S: Meta<T> + Select<T>,
               M: SubMeta<S>
     {
         loop {
-            match self.find(search, stash) {
-                Found::Hit => return Selection::Hit,
-                Found::Between => return Selection::Between,
+            match self.find(search, freezer)? {
+                Found::Hit => return Ok(Selection::Hit),
+                Found::Between => return Ok(Selection::Between),
                 Found::Node(location) => {
                     self.push(location);
                 }
                 Found::Miss => {
-                    match self.steppable_depth(stash) {
+                    match self.steppable_depth(freezer)? {
                         Some(depth) => {
                             let trim = self.depth() - depth - 1;
                             self.trim(trim);
                         }
                         None => {
-                            return Selection::Miss;
+                            return Ok(Selection::Miss);
                         }
                     }
                 }
@@ -135,71 +143,87 @@ impl<T, M, R> Branch<T, M, R>
         }
     }
 
-    pub fn extend(&mut self, stash: &Stash<T, M>) {
+    pub fn extend(&mut self,
+                  freezer: &Freezer<Node<T, M, H>, H, B>)
+                  -> io::Result<()> {
         loop {
-            if let Some(&Child::Node { location, .. }) =
-                self.bottom().child(stash) {
-                self.push(location);
-            } else {
-                break;
+            match self.bottom().child(freezer)? {
+                Some(Cow::Owned(Child::Node { location, .. })) => {
+                    self.push(location)
+                }
+                Some(Cow::Borrowed(&Child::Node { ref location, .. })) => {
+                    self.push(location.clone())
+                }
+                _ => break,
             }
         }
+        Ok(())
     }
 
     fn depth(&self) -> usize {
         self.levels.len()
     }
 
-    pub fn leaf<'a>(&self, stash: &'a Stash<T, M>) -> Option<&'a T> {
-        if let Some(&Child::Leaf(ref t)) = self.bottom().child(stash) {
-            Some(t)
-        } else {
-            None
+    pub fn leaf<'a>(&self,
+                    freezer: &'a Freezer<Node<T, M, H>, H, B>)
+                    -> io::Result<Option<Cow<'a, T>>> {
+        match self.bottom().child(freezer)? {
+            Some(Cow::Owned(Child::Leaf(t))) => Ok(Some(Cow::Owned(t))),
+            Some(Cow::Borrowed(&Child::Leaf(ref t))) => {
+                Ok(Some(Cow::Borrowed(t)))
+            }
+            _ => Ok(None),
         }
     }
 
     pub fn leaf_mut<'a>(&mut self,
-                        stash: &'a mut Stash<T, M>)
-                        -> Option<&'a mut T> {
+                        freezer: &'a mut Freezer<Node<T, M, H>, H, B>)
+                        -> io::Result<Option<&'a mut T>> {
         if let Some(&mut Child::Leaf(ref mut t)) =
-            self.bottom_mut().child_mut(stash) {
-            Some(t)
+            self.bottom_mut().child_mut(freezer)? {
+            Ok(Some(t))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    fn push(&mut self, loc: Location<T, M>) {
-        let depth = self.bottom().location().depth;
-        self.levels.push(Level::new(loc.relative(depth)));
+    fn push(&mut self, loc: Location<H>) {
+        self.levels.push(Level::new(loc));
     }
 
-    pub fn root(&self) -> Location<T, M> {
+    pub fn root(&self) -> &Location<H> {
         self.levels[0].location()
     }
 
-    fn bottom(&self) -> &Level<T, M, R> {
+    pub fn into_root(self) -> Location<H> {
+        let Branch { mut levels, .. } = self;
+        levels.remove(0).into_location()
+    }
+
+    fn bottom(&self) -> &Level<T, M, R, H, B> {
         self.levels.last().expect("branch len always > 0")
     }
 
-    pub fn bottom_mut(&mut self) -> &mut Level<T, M, R> {
+    pub fn bottom_mut(&mut self) -> &mut Level<T, M, R, H, B> {
         self.levels.last_mut().expect("branch len always > 0")
     }
 
-    fn top(&mut self) -> &Level<T, M, R> {
+    fn top(&mut self) -> &Level<T, M, R, H, B> {
         self.levels.first().expect("branch len always > 0")
     }
 
-    fn find_first_root(&mut self, stash: &mut Stash<T, M>) {
+    fn find_first_root(&mut self,
+                       freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                       -> io::Result<()> {
         loop {
-            let root = self.root();
-            let node = stash.get(root);
+            let root = self.root().clone();
+            let node = freezer.get(&root)?;
             match (node.len(), node.child(0)) {
-                (1, Some(&Child::Node { location, .. })) => {
+                (1, Some(&Child::Node { ref location, .. })) => {
                     self.levels.truncate(1);
-                    *self.levels[0].location_mut() = location;
+                    *self.levels[0].location_mut() = location.clone();
                 }
-                _ => return,
+                _ => return Ok(()),
             }
         }
     }
@@ -210,84 +234,102 @@ impl<T, M, R> Branch<T, M, R>
         }
     }
 
-    pub fn propagate(&mut self, stash: &mut Stash<T, M>) {
+    pub fn propagate(&mut self,
+                     freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                     -> io::Result<()> {
         for i in 0..self.depth() - 1 {
             let at = self.depth() - i - 2;
-            let below = self.levels[at + 1].location();
-            self.levels[at].update_child(below, stash);
+            let below = self.levels[at + 1].location().clone();
+            self.levels[at].update_child(&below, freezer)?;
         }
+        Ok(())
     }
 
-    fn propagate_insert(&mut self, stash: &mut Stash<T, M>) {
+    fn propagate_insert(&mut self,
+                        freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                        -> io::Result<()> {
         for i in 0..self.depth() - 1 {
             let at = self.depth() - i - 2;
-            let below = self.levels[at + 1].location();
-            self.levels[at].insert_loc(below, stash);
+            let below = self.levels[at + 1].location().clone();
+            self.levels[at].insert_loc(below, freezer)?;
         }
+        Ok(())
     }
 
-    pub fn insert(&mut self, t: T, divisor: usize, stash: &mut Stash<T, M>) {
-        match self.bottom_mut().insert_t(t, divisor, stash) {
+    pub fn insert(&mut self,
+                  t: T,
+                  divisor: usize,
+                  freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                  -> io::Result<()> {
+        match self.bottom_mut().insert_t(t, divisor, freezer)? {
             InsertResult::Ok => (),
             InsertResult::Split(depth) => {
-                self.ensure_depth(depth + 1, stash);
-                self.split(depth, stash);
+                self.ensure_depth(depth + 1, freezer)?;
+                self.split(depth, freezer)?;
             }
         }
-        self.propagate(stash);
+        self.propagate(freezer)
     }
 
     // Gotcha: Updates value in place, without re-balancing
-    // used for maps, which are only balanced on key.
-    pub fn update(&mut self, t: T, stash: &mut Stash<T, M>) {
-        self.leaf_mut(stash).map(|l| *l = t);
+    // used for maps, who are only balanced on key.
+    pub fn update(&mut self,
+                  t: T,
+                  freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                  -> io::Result<()> {
+        self.leaf_mut(freezer)?.map(|l| *l = t);
+        self.propagate(freezer)?;
+        Ok(())
     }
 
-    pub fn rebalance(&mut self,
-                     old_weight: usize,
-                     new_weight: usize,
-                     stash: &mut Stash<T, M>) {
-        self.propagate(stash);
-        if new_weight != old_weight {
-            if old_weight > 0 {
-                self.merge(old_weight, stash);
-                self.propagate(stash);
-            }
+    // pub fn rebalance(&mut self,
+    //                  old_weight: usize,
+    //                  new_weight: usize,
+    //                  freezer: &mut Freezer<Node<T, M, H>, H, B>) {
+    //     self.propagate(freezer)?;
+    //     if new_weight != old_weight {
+    //         if old_weight > 0 {
+    //             self.merge(old_weight, freezer)?;
+    //             self.propagate(freezer)?;
+    //         }
 
-            if new_weight > 0 {
-                self.ensure_depth(new_weight + 1, stash);
-                self.split(new_weight, stash);
-                self.propagate(stash);
-            }
-            self.find_first_root(stash);
-        }
-    }
+    //         if new_weight > 0 {
+    //             self.ensure_depth(new_weight + 1, freezer)?;
+    //             self.split(new_weight, freezer)?;
+    //             self.propagate(freezer)?;
+    //         }
+    //         self.find_first_root(freezer)?;
+    //     }
+    // }
 
     pub fn remove(&mut self,
                   divisor: usize,
-                  stash: &mut Stash<T, M>)
-                  -> Option<T> {
-        match self.bottom_mut().remove_t(divisor, stash) {
-            RemoveResult::Void => None,
+                  freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                  -> io::Result<Option<T>> {
+        match self.bottom_mut().remove_t(divisor, freezer)? {
+            RemoveResult::Void => Ok(None),
             RemoveResult::Ok(t) => {
-                self.propagate(stash);
-                Some(t)
+                self.propagate(freezer)?;
+                Ok(Some(t))
             }
             RemoveResult::Final(t) => {
-                self.propagate(stash);
-                self.find_first_root(stash);
-                Some(t)
+                self.propagate(freezer)?;
+                self.find_first_root(freezer)?;
+                Ok(Some(t))
             }
-            RemoveResult::Merge { t, depth } => {
-                self.merge(depth, stash);
-                self.propagate(stash);
-                self.find_first_root(stash);
-                Some(t)
+            RemoveResult::Merge { t, depth, .. } => {
+                self.merge(depth, freezer)?;
+                self.propagate(freezer)?;
+                self.find_first_root(freezer)?;
+                Ok(Some(t))
             }
         }
     }
 
-    fn merge(&mut self, depth: usize, stash: &mut Stash<T, M>) {
+    fn merge(&mut self,
+             depth: usize,
+             freezer: &mut Freezer<Node<T, M, H>, H, B>)
+             -> io::Result<()> {
         // levels: [a b c d] merge depth 2
         //            |/|/
         //            1 2
@@ -300,132 +342,157 @@ impl<T, M, R> Branch<T, M, R>
 
         for i in 0..mergers {
             let merge_top = offset + i;
-            if let Some(removed) = self.levels[merge_top].remove_next(stash) {
-                self.levels[merge_top + 1].merge(removed, stash);
+            if let Some(removed) =
+                self.levels[merge_top].remove_next(freezer)? {
+                self.levels[merge_top + 1].merge(removed, freezer)?;
             }
         }
+        Ok(())
     }
 
-    fn ensure_depth(&mut self, depth: usize, stash: &mut Stash<T, M>) {
+    fn ensure_depth(&mut self,
+                    depth: usize,
+                    freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                    -> io::Result<()> {
         while self.depth() < depth {
             let top_loc = self.top().location().clone();
             // singleton node has the same meta as its child
-            let meta = stash.get(top_loc)
+            let meta = freezer.get(&top_loc)?
                 .meta()
                 .expect("root never empty here")
                 .into_owned();
             let new_root = Node::single(Child::new_node(top_loc, meta));
-            let root_loc = stash.put(new_root);
+            let root_loc = freezer.put(new_root);
             self.levels.insert(0, Level::new(root_loc));
         }
+        Ok(())
     }
 
-    fn split(&mut self, depth: usize, stash: &mut Stash<T, M>) {
+    fn split(&mut self,
+             depth: usize,
+             freezer: &mut Freezer<Node<T, M, H>, H, B>)
+             -> io::Result<()> {
         debug_assert!(depth > 0);
         let len = self.levels.len();
         for i in 0..depth {
-            let child = self.levels[len - i - 1].split(stash);
-            self.levels[len - i - 2].insert_after(child, stash);
+            let child = self.levels[len - i - 1].split(freezer)?;
+            self.levels[len - i - 2].insert_after(child, freezer)?;
         }
+        Ok(())
     }
 
-    fn steppable_depth(&mut self, stash: &Stash<T, M>) -> Option<usize> {
+    fn steppable_depth(&mut self,
+                       freezer: &Freezer<Node<T, M, H>, H, B>)
+                       -> io::Result<Option<usize>> {
         for i in 1..self.levels.len() {
             let depth = self.levels.len() - i - 1;
-            if self.levels[depth].steppable(stash) {
-                return Some(depth);
+            if self.levels[depth].steppable(freezer)? {
+                return Ok(Some(depth));
             }
         }
-        None
+        Ok(None)
     }
 
-    pub fn step(&mut self, stash: &Stash<T, M>) -> Option<()> {
-        self.bottom_mut().step(stash).or_else(|| {
+    pub fn step(&mut self,
+                freezer: &Freezer<Node<T, M, H>, H, B>)
+                -> io::Result<Option<()>> {
+        if self.bottom_mut()
+               .step(freezer)?
+               .is_some() {
+            return Ok(Some(()));
+        } else {
             if self.depth() < 2 {
                 self.bottom_mut().force_step();
-                return None;
+                return Ok(None);
             }
             let mut depth = self.depth() - 2;
             loop {
-                match self.levels[depth].step(stash) {
+                match self.levels[depth].step(freezer)? {
                     Some(_) => {
                         let trim = self.depth() - depth - 1;
                         self.trim(trim);
-                        self.extend(stash);
-                        return Some(());
+                        self.extend(freezer)?;
+                        return Ok(Some(()));
                     }
                     None => {
                         if depth == 0 {
                             // nothing steppable, move to end-condition
                             self.bottom_mut().force_step();
-                            return None;
+                            return Ok(None);
                         } else {
                             depth -= 1;
                         }
                     }
                 }
             }
-        })
+        }
     }
 
-    pub fn left(&self, stash: &mut Stash<T, M>) -> Branch<T, M, End> {
-        let mut levels: Vec<Level<T, M, End>> = vec![];
+    pub fn left(&self,
+                freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                -> io::Result<Branch<T, M, End, H, B>> {
+        let mut levels: Vec<Level<T, M, End, H, B>> = vec![];
 
         for i in 0..self.levels.len() {
-            if let Some(loc) = self.levels[i].left(stash) {
+            if let Some(loc) = self.levels[i].left(freezer)? {
                 levels.push(Level::new(loc));
             } else {
                 if levels.len() > 0 {
-                    levels.push(Level::new(stash.put(Node::new())));
+                    levels.push(Level::new(freezer.put(Node::new())));
                 }
             }
         }
 
         if levels.len() > 0 {
             let mut branch = Branch::from_levels(levels);
-            branch.propagate_insert(stash);
-            Branch::first(branch.root(), stash)
+            branch.propagate_insert(freezer)?;
+            Branch::first(branch.into_root(), freezer)
         } else {
-            Branch::new(stash.put(Node::new()))
+            Ok(Branch::new(freezer.put(Node::new())))
         }
     }
 
-    pub fn right(&self, stash: &mut Stash<T, M>) -> Branch<T, M, Beginning> {
-        let mut levels: Vec<Level<T, M, Beginning>> = vec![];
+    pub fn right(&self,
+                 freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                 -> io::Result<Branch<T, M, Beginning, H, B>> {
+        let mut levels: Vec<Level<T, M, Beginning, H, B>> = vec![];
 
         for i in 0..self.levels.len() {
             let i = self.levels.len() - i - 1;
-            levels.insert(0, Level::new(self.levels[i].right(stash)));
+            levels.insert(0, Level::new(self.levels[i].right(freezer)?));
         }
 
         let mut branch = Branch::from_levels(levels);
-        branch.propagate(stash);
-        branch.find_first_root(stash);
-        branch.extend(stash);
-        branch
+        branch.propagate(freezer)?;
+        branch.find_first_root(freezer)?;
+        branch.extend(freezer)?;
+        Ok(branch)
     }
 }
 
-impl<'a, T, M, R> Branch<T, M, R>
-    where T: Val,
+impl<'a, T, M, R, H, B> Branch<T, M, R, H, B>
+    where T: Weight + Freeze<H> + Clone,
           M: Meta<T>,
-          R: Relative
+          R: Relative,
+          H: CryptoHash
 {
-    pub fn skip_equal<E>(&mut self, other: &mut Self, stash: &'a Stash<T, M>)
+    pub fn skip_equal<E>(&mut self,
+                         other: &mut Self,
+                         freezer: &'a Freezer<Node<T, M, H>, H, B>)
+                         -> io::Result<()>
         where M: SubMeta<E>,
-              E: Meta<T> + PartialEq
+              E: Meta<T> + PartialEq,
+              B: Backend<Node<T, M, H>, H>
     {
         let mut depth = 0;
 
-        while self.level_meta(depth, stash).map(|m| {
-                                                    (*(*m).submeta()).clone() as
-                                                    E
-                                                }) ==
-              other.level_meta(depth, stash).map(|m| {
-                                                     (*(*m).submeta())
-                                                         .clone() as
-                                                     E
-                                                 }) {
+        while {
+                  match (self.level_meta(depth, freezer)?,
+                         other.level_meta(depth, freezer)?) {
+                      (Some(a), Some(b)) => a.submeta() == b.submeta(),
+                      _ => false,
+                  }
+              } {
             depth += 1;
         }
 
@@ -437,52 +504,57 @@ impl<'a, T, M, R> Branch<T, M, R>
             self.trim(depth);
             other.trim(depth);
 
-            self.step(stash);
-            other.step(stash);
+            self.step(freezer)?;
+            other.step(freezer)?;
 
-            self.extend(stash);
-            other.extend(stash);
+            self.extend(freezer)?;
+            other.extend(freezer)?;
         }
 
         // at leaf level
-        match (self.leaf(stash).map(|t| E::from_t(t)),
-               other.leaf(stash).map(|t| E::from_t(t))) {
+        match (self.leaf(freezer)?.map(|t| E::from_t(&*t)),
+               other.leaf(freezer)?.map(|t| E::from_t(&*t))) {
             (Some(ref a), Some(ref b)) if a == b => {
-                self.step(stash);
-                other.step(stash);
+                self.step(freezer)?;
+                other.step(freezer)?;
+                Ok(())
             }
-            _ => return,
+            _ => return Ok(()),
         }
     }
 }
 
-impl<T, M, R> Branch<T, M, R>
-    where T: Val,
+impl<T, M, R, H, B> Branch<T, M, R, H, B>
+    where T: Weight + Freeze<H> + Clone,
           M: Meta<T>,
-          R: Relative
+          R: Relative,
+          H: CryptoHash,
+          B: Backend<Node<T, M, H>, H>
 {
-    pub fn reverse<O>(&self, stash: &Stash<T, M>) -> Branch<T, M, O>
+    pub fn reverse<O>(&self,
+                      freezer: &Freezer<Node<T, M, H>, H, B>)
+                      -> io::Result<Branch<T, M, O, H, B>>
         where O: Relative + Opposite<R>,
-              R: Opposite<O>
+              R: Relative + Opposite<O>
     {
-        Branch::first(self.root(), stash)
+        Branch::first(self.root().clone(), freezer)
     }
 
     pub fn concat<O>(&self,
-                     right: &Branch<T, M, O>,
+                     right: &Branch<T, M, O, H, B>,
                      divisor: usize,
-                     stash: &mut Stash<T, M>)
-                     -> Branch<T, M, R>
+                     freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                     -> io::Result<Branch<T, M, R, H, B>>
         where O: Relative + Opposite<R>,
               R: Opposite<O>
     {
-        if self.empty(stash) {
-            return right.reverse(stash);
-        } else if right.empty(stash) {
-            return self.clone();
+        if self.empty(freezer)? {
+            return right.reverse(freezer);
+        } else if right.empty(freezer)? {
+            return Ok(self.clone());
         }
 
-        let self_weight = self.leaf(stash).map(|l| l.weight() / divisor);
+        let self_weight = self.leaf(freezer)?.map(|l| l.weight() / divisor);
 
         let mut l_self = self.levels.iter().rev();
         let mut l_right = right.levels.iter().rev();
@@ -495,11 +567,11 @@ impl<T, M, R> Branch<T, M, R>
                     levels.insert(0,
                                   Level::concat(s.location(),
                                                 r.location(),
-                                                stash))
+                                                freezer)?)
                 }
                 (Some(s), None) => levels.insert(0, s.clone()),
                 (None, Some(r)) => {
-                    levels.insert(0, r.reverse(stash));
+                    levels.insert(0, r.reverse(freezer)?);
                 }
                 (None, None) => break,
             }
@@ -508,41 +580,12 @@ impl<T, M, R> Branch<T, M, R>
         let mut branch = Branch::from_levels(levels);
         if let Some(weight) = self_weight {
             if weight > 0 {
-                branch.ensure_depth(weight + 1, stash);
-                branch.split(weight, stash);
+                branch.ensure_depth(weight + 1, freezer)?;
+                branch.split(weight, freezer)?;
             }
         }
-        branch.propagate(stash);
-        let branch = Branch::first(branch.root(), stash);
-        branch
-    }
-
-    pub fn weight(&self, divisor: usize, stash: &Stash<T, M>) -> usize {
-        cmp::max(self.depth() - 1, self.bottom().weight(divisor, stash))
-    }
-}
-
-// impl<T, M, R> Branch<T, M, R>
-//     where T: Val,
-//           M: Meta<T> + Into<&KeyMeta<T>>,
-//           R: Relative
-// {
-//     pub fn key(&self, stash: &Stash<T, M>) -> Option<T::Key> {
-//         self.leaf(stash).map(|leaf| )
-//     }
-// }
-
-impl<T, M, R> Html<T, M> for Branch<T, M, R>
-    where T: Val + fmt::Debug,
-          M: Meta<T>,
-          R: Relative
-{
-    fn _html(&self, stash: RelStash<T, M>) -> String {
-        let mut s = String::from("<table>");
-        for level in &self.levels {
-            s += &format!("<tr>{}</tr>", level._html(stash))
-        }
-        s.push_str("</table>");
-        s
+        branch.propagate(freezer)?;
+        let branch = Branch::first(branch.root().clone(), freezer)?;
+        Ok(branch)
     }
 }

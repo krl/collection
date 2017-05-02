@@ -1,13 +1,12 @@
-use std::fmt;
 use std::mem;
+use std::io;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 
-use Val;
-use stash::{Stash, RelStash, Location};
+use freezer::{Freezer, Freeze, Location, CryptoHash, Backend};
+use tree::weight::Weight;
 use tree::node::{Node, Child, InsertResult, RemoveResult};
 use meta::{Meta, SubMeta, Select, Selection, Found};
-use html::Html;
 
 pub trait Relative {
     fn at(i: usize, len: usize) -> usize;
@@ -59,20 +58,16 @@ impl Relative for End {
     }
 }
 
-pub struct Level<T, M, R>
-    where T: Val,
-          M: Meta<T>,
-          R: Relative
+pub struct Level<T, M, R, H, B>
+    where H: CryptoHash
 {
     ofs: usize,
-    location: Location<T, M>,
-    _r: PhantomData<R>,
+    location: Location<H>,
+    _r: PhantomData<(T, M, R, B)>,
 }
 
-impl<T, M, R> Clone for Level<T, M, R>
-    where T: Val,
-          M: Meta<T>,
-          R: Relative
+impl<T, M, R, H, B> Clone for Level<T, M, R, H, B>
+    where H: CryptoHash
 {
     fn clone(&self) -> Self {
         Level {
@@ -83,12 +78,15 @@ impl<T, M, R> Clone for Level<T, M, R>
     }
 }
 
-impl<T, M, R> Level<T, M, R>
-    where T: Val,
+impl<T, M, R, H, B> Level<T, M, R, H, B>
+    where T: Weight + Freeze<H>,
           M: Meta<T>,
-          R: Relative
+          R: Relative,
+          H: CryptoHash,
+          B: Backend<Node<T, M, H>, H>,
+          Node<T, M, H>: Clone
 {
-    pub fn new(location: Location<T, M>) -> Self {
+    pub fn new(location: Location<H>) -> Self {
         Level {
             ofs: 0,
             location: location,
@@ -96,98 +94,135 @@ impl<T, M, R> Level<T, M, R>
         }
     }
 
+    pub fn into_location(self) -> Location<H> {
+        self.location
+    }
+
     pub fn update_child(&mut self,
-                        with: Location<T, M>,
-                        stash: &mut Stash<T, M>) {
-        let new_meta = stash.get(with).meta().map(|cow| cow.into_owned());
+                        with: &Location<H>,
+                        freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                        -> io::Result<()> {
+        let new_meta =
+            (*freezer.get(&with)?).meta().map(|cow| cow.into_owned());
         match new_meta {
             Some(meta) => {
-                let child = self.child_mut(stash).expect("valid");
-                *child = Child::new_node(with, meta);
+                let child = self.child_mut(freezer)?.expect("valid");
+                *child = Child::new_node(with.clone(), meta);
+                Ok(())
             }
             None => {
-                self.remove(stash);
+                self.remove(freezer)?;
+                Ok(())
             }
         }
     }
 
-    pub fn left(&self, stash: &mut Stash<T, M>) -> Option<Location<T, M>> {
-        let mut left;
+    pub fn left(&self,
+                freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                -> io::Result<Option<Location<H>>> {
+        let left;
         {
-            let node = stash.get(self.location);
+            let node = freezer.get(&self.location)?;
             let len = node.len();
             let at = R::at(self.ofs, len);
             if at == 0 {
-                return None;
+                return Ok(None);
             } else if at == len {
-                return Some(self.location);
+                return Ok(Some(self.location.clone()));
             } else {
                 left = node.left(at);
-                left.relativize(self.location.depth);
             }
         }
-        Some(stash.put(left))
+        Ok(Some(freezer.put(left)))
     }
 
     // Right always has at least one location.
-    pub fn right(&self, stash: &mut Stash<T, M>) -> Location<T, M> {
-        let mut right;
+    pub fn right(&self,
+                 freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                 -> io::Result<Location<H>> {
+        let right;
         {
-            let node = stash.get(self.location);
+            let node = freezer.get(&self.location)?;
             let len = node.len();
             let at = R::at(self.ofs, len);
             if at == 0 {
-                return self.location;
+                return Ok(self.location.clone());
             }
             if at == len {
                 right = Node::new();
             } else {
                 right = node.right(at);
-                right.relativize(self.location.depth);
             }
         }
-        stash.put(right)
+        Ok(freezer.put(right))
     }
 
-    pub fn child<'a>(&self, stash: &'a Stash<T, M>) -> Option<&'a Child<T, M>> {
-        let node = stash.get(self.location);
+    pub fn child_at<'a>(&self,
+                        ofs: usize,
+                        freezer: &'a Freezer<Node<T, M, H>, H, B>)
+                        -> io::Result<Option<Cow<'a, Child<T, M, H>>>> {
+        let node = freezer.get(&self.location)?;
         let len = node.len();
-        node.child(R::at(self.ofs, len))
+        let at = R::at(ofs, len);
+        Ok(match node {
+               Cow::Owned(node) => {
+                   node.into_child(at).map(|child| Cow::Owned(child))
+               }
+               Cow::Borrowed(ref node) => {
+                   node.child(at).map(|child| Cow::Borrowed(child))
+               }
+           })
     }
+
+    pub fn child<'a>(&self,
+                     freezer: &'a Freezer<Node<T, M, H>, H, B>)
+                     -> io::Result<Option<Cow<'a, Child<T, M, H>>>> {
+        self.child_at(self.ofs, freezer)
+    }
+
+    // pub fn first<'a>(&self,
+    //                  freezer: &'a Freezer<Node<T, M, H>, H, B>)
+    //                  -> io::Result<Option<Cow<'a, Child<T, M, H>>>> {
+    //     self.child_at(0, freezer)
+    // }
 
     pub fn child_mut<'a>(&mut self,
-                         stash: &'a mut Stash<T, M>)
-                         -> Option<&'a mut Child<T, M>> {
-        let node = stash.get_mut(&mut self.location);
+                         freezer: &'a mut Freezer<Node<T, M, H>, H, B>)
+                         -> io::Result<Option<&'a mut Child<T, M, H>>> {
+        let node = freezer.get_mut(&mut self.location)?;
         let len = node.len();
-        node.child_mut(R::at(self.ofs, len))
+        Ok(node.child_mut(R::at(self.ofs, len)))
     }
 
-    pub fn location(&self) -> Location<T, M> {
-        self.location
+    pub fn location(&self) -> &Location<H> {
+        &self.location
     }
 
-    pub fn empty(&self, stash: &Stash<T, M>) -> bool {
-        stash.get(self.location).len() == 0
-    }
+    // pub fn empty(&self,
+    //              freezer: &Freezer<Node<T, M, H>, H, B>)
+    //              -> io::Result<bool> {
+    //     Ok(freezer.get(&self.location)?.len() == 0)
+    // }
 
-    pub fn offset_mut(&mut self) -> &mut usize {
-        &mut self.ofs
-    }
+    // pub fn offset_mut(&mut self) -> &mut usize {
+    //     &mut self.ofs
+    // }
 
-    pub fn location_mut(&mut self) -> &mut Location<T, M> {
+    pub fn location_mut(&mut self) -> &mut Location<H> {
         &mut self.location
     }
 
-    pub fn step(&mut self, stash: &Stash<T, M>) -> Option<()> {
-        let node = stash.get(self.location);
+    pub fn step(&mut self,
+                freezer: &Freezer<Node<T, M, H>, H, B>)
+                -> io::Result<Option<()>> {
+        let node = freezer.get(&self.location)?;
 
         match node.child(self.ofs + 1) {
             Some(_) => {
                 self.ofs = self.ofs + 1;
-                return Some(());
+                return Ok(Some(()));
             }
-            None => return None,
+            None => return Ok(None),
         }
     }
 
@@ -195,138 +230,154 @@ impl<T, M, R> Level<T, M, R>
         self.ofs += 1;
     }
 
-    pub fn steppable(&mut self, stash: &Stash<T, M>) -> bool {
-        match stash.get(self.location).child(self.ofs + 1) {
-            Some(_) => true,
-            None => false,
-        }
+    pub fn steppable(&mut self,
+                     freezer: &Freezer<Node<T, M, H>, H, B>)
+                     -> io::Result<bool> {
+        Ok(match freezer.get(&self.location)?.child(self.ofs + 1) {
+               Some(_) => true,
+               None => false,
+           })
     }
 
     pub fn insert_loc(&mut self,
-                      loc: Location<T, M>,
-                      stash: &mut Stash<T, M>) {
-        stash.get(loc)
+                      loc: Location<H>,
+                      freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                      -> io::Result<()> {
+        freezer.get(&loc)?
             .meta()
             .map(|meta| Child::new_node(loc, meta.into_owned()))
-            .map(|child| self.insert(child, stash));
+            .map(|child| self.insert(child, freezer));
+        Ok(())
     }
 
     pub fn insert_after(&mut self,
-                        child: Child<T, M>,
-                        stash: &mut Stash<T, M>) {
-        let node = stash.get_mut(&mut self.location);
+                        child: Child<T, M, H>,
+                        freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                        -> io::Result<()> {
+        let node = freezer.get_mut(&mut self.location)?;
         let len = node.len();
         node.insert(R::after(self.ofs, len), child);
+        Ok(())
     }
 
-    pub fn insert(&mut self, child: Child<T, M>, stash: &mut Stash<T, M>) {
-        let node = stash.get_mut(&mut self.location);
+    pub fn insert(&mut self,
+                  child: Child<T, M, H>,
+                  freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                  -> io::Result<()> {
+        let node = freezer.get_mut(&mut self.location)?;
         let len = node.len();
         node.insert(R::insert(self.ofs, len), child);
+        Ok(())
     }
 
     pub fn insert_t(&mut self,
                     t: T,
                     divisor: usize,
-                    stash: &mut Stash<T, M>)
-                    -> InsertResult {
+                    freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                    -> io::Result<InsertResult> {
         let weight = t.weight() / divisor;
-        let node = stash.get_mut(&mut self.location);
+        let node = freezer.get_mut(&mut self.location)?;
         let len = node.len();
         let self_weight = node.insert_t(R::insert(self.ofs, len), t, divisor);
 
         if len == 0 {
-            InsertResult::Ok
+            Ok(InsertResult::Ok)
         } else {
             match (self_weight, weight, R::from_end()) {
                 // A
-                (self_w, _, true) if self_w > 0 => InsertResult::Split(self_w),
+                (self_w, _, true) if self_w > 0 => {
+                    Ok(InsertResult::Split(self_w))
+                }
                 // B
-                (_, weight, false) if weight > 0 => InsertResult::Split(weight),
-                _ => InsertResult::Ok,
+                (_, weight, false) if weight > 0 => {
+                    Ok(InsertResult::Split(weight))
+                }
+                _ => Ok(InsertResult::Ok),
             }
         }
     }
 
-    fn remove(&mut self, stash: &mut Stash<T, M>) -> Option<Node<T, M>> {
-        let mut child_node_loc = None;
+    fn remove(&mut self,
+              freezer: &mut Freezer<Node<T, M, H>, H, B>)
+              -> io::Result<Option<Node<T, M, H>>> {
         {
-            let node = stash.get_mut(&mut self.location);
+            let node = freezer.get_mut(&mut self.location)?;
             match node.remove(self.ofs) {
                 Some(Child::Node { location, .. }) => {
-                    child_node_loc = Some(location);
                     self.ofs = self.ofs.saturating_sub(1);
+                    Ok(Some((freezer.get(&location)?.into_owned())))
                 }
-                _ => (),
+                _ => Ok(None),
             }
         }
-        child_node_loc.map(|loc| stash.remove(loc))
     }
 
     pub fn remove_next(&mut self,
-                       stash: &mut Stash<T, M>)
-                       -> Option<Node<T, M>> {
+                       freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                       -> io::Result<Option<Node<T, M, H>>> {
         self.ofs += 1;
-        match self.remove(stash) {
-            Some(removed) => Some(removed),
-            // undo
+        match self.remove(freezer)? {
             None => {
                 self.ofs = self.ofs.saturating_sub(1);
-                None
+                Ok(None)
             }
+            Some(removed) => Ok(Some(removed)),
         }
     }
 
     pub fn remove_t(&mut self,
                     divisor: usize,
-                    stash: &mut Stash<T, M>)
-                    -> RemoveResult<T> {
-        stash.get_mut(&mut self.location).remove_t(self.ofs, divisor)
+                    freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                    -> io::Result<RemoveResult<T, H>> {
+        Ok(freezer.get_mut(&mut self.location)?.remove_t(self.ofs, divisor))
     }
 
-    pub fn split(&mut self, stash: &mut Stash<T, M>) -> Child<T, M> {
+    pub fn split(&mut self,
+                 freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                 -> io::Result<Child<T, M, H>> {
         let mut new;
         {
-            let node = stash.get_mut(&mut self.location);
+            let node = freezer.get_mut(&mut self.location)?;
             let len = node.len();
             new = node.split(R::after(self.ofs, len));
             R::order(node, &mut new);
         }
         let meta =
             new.meta().expect("split cannot produce empty nodes").into_owned();
-        Child::new_node(stash.put(new), meta)
+        Ok(Child::new_node(freezer.put(new), meta))
     }
 
-    pub fn merge(&mut self, from: Node<T, M>, stash: &mut Stash<T, M>) {
-        stash.get_mut(&mut self.location).merge(from)
-    }
-
-    pub fn first<'a>(&self, stash: &'a Stash<T, M>) -> Option<&'a Child<T, M>> {
-        let node = stash.get(self.location);
-        node.child(R::at(0, node.len()))
+    pub fn merge(&mut self,
+                 from: Node<T, M, H>,
+                 freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                 -> io::Result<()> {
+        Ok(freezer.get_mut(&mut self.location)?.merge(from))
     }
 
     pub fn find<S>(&mut self,
                    search: &mut S,
-                   stash: &Stash<T, M>)
-                   -> Found<T, M>
+                   freezer: &Freezer<Node<T, M, H>, H, B>)
+                   -> io::Result<Found<H>>
         where S: Meta<T> + Select<T>,
               M: SubMeta<S>
     {
-        let node = stash.get(self.location);
+        let node = freezer.get(&self.location)?;
         let len = node.len();
 
         if len == 0 {
-            return Found::Between;
+            return Ok(Found::Between);
         }
 
         loop {
             let child = node.child(R::at(self.ofs, len));
             match child {
-                Some(&Child::Node { location, ref meta }) => {
+                Some(&Child::Node {
+                          ref location,
+                          ref meta,
+                      }) => {
                     match search.select(meta.submeta()) {
                         Selection::Hit | Selection::Between => {
-                            return Found::Node(location)
+                            return Ok(Found::Node(location.clone()))
                         }
                         Selection::Miss => {
                             self.ofs += 1;
@@ -336,30 +387,30 @@ impl<T, M, R> Level<T, M, R>
                 Some(&Child::Leaf(ref t)) => {
                     match search.select(Cow::Owned(S::from_t(t))) {
                         Selection::Hit => {
-                            return Found::Hit;
+                            return Ok(Found::Hit);
                         }
                         Selection::Between => {
-                            return Found::Between;
+                            return Ok(Found::Between);
                         }
                         Selection::Miss => {
                             self.ofs += 1;
                         }
                     }
                 }
-                None => return Found::Miss,
+                None => return Ok(Found::Miss),
             }
         }
     }
 
-    pub fn concat(left: Location<T, M>,
-                  right: Location<T, M>,
-                  stash: &mut Stash<T, M>)
-                  -> Level<T, M, R> {
+    pub fn concat(left: &Location<H>,
+                  right: &Location<H>,
+                  freezer: &mut Freezer<Node<T, M, H>, H, B>)
+                  -> io::Result<Level<T, M, R, H, B>> {
         let ofs;
         let new;
         {
-            let lnode = stash.get_clone(left);
-            let rnode = stash.get_clone(right);
+            let lnode = freezer.get(left)?.into_owned();
+            let rnode = freezer.get(right)?.into_owned();
 
             if rnode.len() == 0 {
                 new = lnode;
@@ -377,82 +428,33 @@ impl<T, M, R> Level<T, M, R>
                 }
             }
         }
-        Level {
-            ofs: ofs,
-            location: stash.put(new),
-            _r: PhantomData,
-        }
-    }
-
-    pub fn weight(&self, divisor: usize, stash: &Stash<T, M>) -> usize {
-        stash.get(self.location).weight(divisor)
+        Ok(Level {
+               ofs: ofs,
+               location: freezer.put(new),
+               _r: PhantomData,
+           })
     }
 }
 
-impl<T, M, R> Level<T, M, R>
-    where T: Val,
-          M: Meta<T>,
-          R: Relative
+impl<T, M, R, H, B> Level<T, M, R, H, B>
+    where T: Weight + Freeze<H> + Clone,
+          M: Meta<T> + Clone,
+          H: CryptoHash,
+          Node<T, M, H>: Clone,
+          B: Backend<Node<T, M, H>, H> + Clone
 {
-    pub fn reverse<O>(&self, stash: &Stash<T, M>) -> Level<T, M, O>
+    pub fn reverse<O>(&self,
+                      freezer: &Freezer<Node<T, M, H>, H, B>)
+                      -> io::Result<Level<T, M, O, H, B>>
         where O: Relative + Opposite<R>,
-              R: Relative + Opposite<O>
+              R: Relative + Opposite<O>,
+              H: CryptoHash
     {
-        let len = stash.get(self.location).len();
-        Level {
-            ofs: len - self.ofs - 1,
-            location: self.location,
-            _r: PhantomData,
-        }
-    }
-}
-
-impl<T, M, R> Html<T, M> for Level<T, M, R>
-    where T: Val + fmt::Debug,
-          M: Meta<T>,
-          R: Relative
-{
-    fn _html(&self, stash: RelStash<T, M>) -> String {
-        let mut left = String::new();
-        let mut right = String::new();
-        let mut marker = String::new();
-
-        let node = stash.get(self.location());
-        // re-set stash
-        let stash = stash.relative(self.location());
-        let len = node.len() as i16;
-
-        let pivot;
-
-        match R::from_end() {
-            false => pivot = self.ofs as i16,
-            true => pivot = len - self.ofs as i16 - 1,
-        }
-
-        if pivot < 0 {
-            marker += &format!("({})", pivot);
-        } else {
-            for i in 0..pivot {
-                left += &node.children[i as usize]._html(stash)
-            }
-
-            if pivot >= len as i16 {
-                marker += &format!("({})", pivot);
-            } else {
-                marker = node.children[pivot as usize]._html(stash);
-                for i in pivot as usize + 1..len as usize {
-                    right += &node.children[i]._html(stash)
-                }
-            }
-        }
-
-        format!("<td><div class=\"lbranch\">{}</div></td>
-                 <td class=\"mid\">{}</td>
-                 <td><div class=\"rbranch\">{}</div></td><td>{:?}</td>",
-                left,
-                marker,
-                right,
-                self.ofs,
-        )
+        let len = freezer.get(&self.location)?.len();
+        Ok(Level {
+               ofs: len - self.ofs - 1,
+               location: self.location.clone(),
+               _r: PhantomData,
+           })
     }
 }
