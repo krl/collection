@@ -1,6 +1,10 @@
 use std::marker::PhantomData;
 use std::borrow::Cow;
+use std::io;
+
 use meta::{Meta, Select, Selection};
+
+use freezer::{Freeze, CryptoHash, Sink, Source};
 
 /// Metadata for the maximum `T` in subtree.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -31,5 +35,17 @@ impl<T> Select<T> for Max<T>
         } else {
             Selection::Miss
         }
+    }
+}
+
+impl<T, H> Freeze<H> for Max<T>
+    where H: CryptoHash,
+          T: Freeze<H>
+{
+    fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
+        self.0.freeze(into)
+    }
+    fn thaw(from: &mut Source<H>) -> io::Result<Self> {
+        Ok(Max(T::thaw(from)?))
     }
 }

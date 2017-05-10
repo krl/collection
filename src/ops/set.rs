@@ -37,7 +37,7 @@ pub trait SetOpsCheckSum<T>
 impl<T, M, H, B> SetOps<T> for Collection<T, M, H, B>
     where H: CryptoHash,
           T: Weight + Clone + Ord + Freeze<H>,
-          M: Meta<T> + SubMeta<Max<T>>,
+          M: Meta<T> + SubMeta<Max<T>> + Freeze<H>,
           B: Backend<Node<T, M, H>, H>
 {
     fn member(&self, t: &T) -> io::Result<bool> {
@@ -97,7 +97,7 @@ impl<T, M, H, B> SetOps<T> for Collection<T, M, H, B>
 impl<T, M, H, B> SetOpsCheckSum<T> for Collection<T, M, H, B>
     where T: Hash + Weight + Clone + Ord + Freeze<H>,
           H: CryptoHash,
-          M: SubMeta<CheckSum<u64>> + SubMeta<Max<T>> + Meta<T>,
+          M: SubMeta<CheckSum<u64>> + SubMeta<Max<T>> + Meta<T> + Freeze<H>,
           B: Backend<Node<T, M, H>, H>
 {
     fn union(&mut self, b: &mut Self) -> io::Result<Self> {
@@ -118,13 +118,13 @@ mod tests {
 
     use meta::max::Max;
     use meta::checksum::CheckSum;
+    use freezer::BlakeWrap;
 
     use collection::Collection;
-    use freezer::VoidHash;
 
     use super::SetOpsCheckSum;
 
-    collection!(Set<T, VoidHash> {
+    collection!(Set<T, BlakeWrap> {
         max: Max<T>,
         checksum: CheckSum<u64>,
     } where T: Ord + Hash);
@@ -416,5 +416,65 @@ mod tests {
 
         let u = a.union(&mut b).unwrap();
         assert!(r == u);
+    }
+
+}
+
+#[cfg(test)]
+mod tests_disk {
+
+    extern crate tempdir;
+    use self::tempdir::TempDir;
+
+    use super::SetOps;
+    use test_common::LOTS;
+
+    use std::cmp::Ord;
+    use std::hash::Hash;
+
+    use meta::max::Max;
+    use meta::checksum::CheckSum;
+
+    use collection::Collection;
+    use freezer::BlakeWrap;
+    use std::path::PathBuf;
+
+    use super::SetOpsCheckSum;
+
+    collection!(Set<T, BlakeWrap> {
+        max: Max<T>,
+        checksum: CheckSum<u64>,
+    } where T: Ord + Hash);
+
+    #[test]
+    fn persist() {
+
+        let tmp = TempDir::new("freezer_test").unwrap();
+        let path = PathBuf::from(&tmp.path());
+
+        let mut set = Set::<usize, PathBuf>::new(path.clone());
+        let mut values = vec![];
+
+        for i in 0..LOTS {
+            values.push(i);
+        }
+
+        for i in 0..LOTS {
+            set.insert(i).unwrap();
+        }
+
+        let hash = set.persist().unwrap();
+
+        let mut restored = Set::<usize, PathBuf>::restore(hash, path).unwrap();
+
+        assert!(set == restored);
+
+        let mut iter = restored.iter();
+
+        for i in 0..LOTS {
+            let next = *iter.next().unwrap().unwrap();
+            assert_eq!(next, i);
+        }
+        assert!(iter.next().is_none());
     }
 }

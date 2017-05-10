@@ -1,7 +1,9 @@
 use std::marker::PhantomData;
 use std::borrow::Cow;
+use std::io;
 
 use meta::{Meta, Select, Selection};
+use freezer::{Freeze, CryptoHash, Sink, Source};
 
 #[derive(Clone, PartialEq)]
 pub struct Cardinality<T>(T);
@@ -36,5 +38,17 @@ impl<T> Select<T> for Cardinality<usize> {
             self.0 -= other.0;
             Selection::Miss
         }
+    }
+}
+
+impl<T, H> Freeze<H> for Cardinality<T>
+    where H: CryptoHash,
+          T: Freeze<H>
+{
+    fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
+        self.0.freeze(into)
+    }
+    fn thaw(from: &mut Source<H>) -> io::Result<Self> {
+        Ok(Cardinality(T::thaw(from)?))
     }
 }

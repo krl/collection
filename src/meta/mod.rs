@@ -19,9 +19,6 @@ pub trait Meta<T>
 {
     /// Construct a metadata value from `&T`
     fn from_t(t: &T) -> Self;
-    // The PhantomData argument seems to be neccesary
-    // to have T be in scope in this method.
-
     /// Merge two metadata values, `(M, M) -> M`
     fn merge(&mut self, other: &Self, _t: PhantomData<T>);
 }

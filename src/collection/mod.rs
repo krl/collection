@@ -1,8 +1,8 @@
-use std::io::{self, Read};
+use std::io;
 
 use meta::{Meta, SubMeta, Select};
 use freezer::{Location, Backend, CryptoHash};
-use freezer::{Freeze, Freezer, WriteHashing, Deps};
+use freezer::{Freezer, Freeze, Sink, Source};
 use tree::weight::Weight;
 use tree::node::Node;
 use tree::branch::Branch;
@@ -28,8 +28,8 @@ pub struct Collection<T, M, H, B>
 }
 
 impl<T, M, H, B> Collection<T, M, H, B>
-    where T: Weight + Freeze<H> + Clone,
-          M: Meta<T>,
+    where T: Weight + Freeze<H>,
+          M: Meta<T> + Freeze<H>,
           H: CryptoHash,
           B: Backend<Node<T, M, H>, H>
 {
@@ -122,7 +122,7 @@ impl<T, M, H, B> Collection<T, M, H, B>
             where T: Weight + Freeze<H> + Clone,
                   F: Meta<T> + Select<T> + PartialEq + Ord,
                   E: Meta<T> + PartialEq,
-                  M: Meta<T> + SubMeta<F> + SubMeta<E>,
+                  M: Meta<T> + Freeze<H> + SubMeta<F> + SubMeta<E>,
                   B: Backend<Node<T, M, H>, H>,
                   H: CryptoHash
         {
@@ -223,13 +223,30 @@ impl<T, M, H, B> Collection<T, M, H, B>
             }
         }
     }
+
+    pub fn persist(&self) -> io::Result<H::Digest> {
+        self.freezer.freeze(&self.root)
+    }
+
+    pub fn restore(hash: H::Digest, backend: B) -> io::Result<Self> {
+        let freezer = Freezer::new(backend);
+        let root = Location::from_hash(hash);
+        Ok(Collection {
+               meta: freezer.get(&root)?
+                   .meta()
+                   .map(|m| m.into_owned()),
+               freezer: freezer.clone(),
+               root: root,
+               divisor: 2,
+           })
+    }
 }
 
 
 impl<T, M, H, B> Clone for Collection<T, M, H, B>
     where H: CryptoHash,
-          T: Clone,
-          M: Clone,
+          T: Weight + Freeze<H>,
+          M: Clone + Freeze<H> + Meta<T>,
           B: Backend<Node<T, M, H>, H> + Clone
 {
     fn clone(&self) -> Self {
@@ -254,39 +271,49 @@ macro_rules! collection {
             use std::io::{self, Read};
             use tree::weight::Weight;
             use tree::node::Node;
-            use freezer::{Freeze, CryptoHash, Backend, WriteHashing, Deps};
+            use freezer::{Freeze, CryptoHash, Backend, Sink, Source};
             use meta::{Meta, SubMeta};
 
             use super::*;
 
             #[derive(Clone)]
-            pub struct CollectionMeta<$t>
-                where $t: Clone, $($restraints)* {
-                _t: PhantomData<$t>,
+            pub struct CollectionMeta<$t, H>
+                where H: CryptoHash,
+                      $t: Clone,
+                      $($restraints)*,
+                      $( $submeta<$subtype>: Freeze<H>, )*
+            {
+                _t: PhantomData<($t, H)>,
                 $(
                     $slot: $submeta<$subtype>,
                 )*
             }
 
-            impl<T, H> Freeze<H> for CollectionMeta<T>
+            impl<T, H> Freeze<H> for CollectionMeta<T, H>
                 where T: Weight + Freeze<H>,
-                <H as CryptoHash>::Digest: Freeze<H>,
-                      H: CryptoHash, $($restraints)*
+                      H: CryptoHash,
+                      $($restraints)*
             {
-                fn freeze(&self,
-                          into: &mut WriteHashing<Digest = H::Digest>,
-                          deps: Deps<H>)
-                          -> io::Result<H::Digest> {
-                    Ok(into.fin())
+                fn freeze(&self, into: &mut Sink<H>)
+                          -> io::Result<()> {
+                    $(
+                        self.$slot.freeze(into)?;
+                    )*
+                        Ok(())
                 }
 
-                fn thaw(from: &mut Read) -> io::Result<Self> {
-                    panic!()
+                fn thaw(from: &mut Source<H>) -> io::Result<Self> {
+                    Ok(CollectionMeta {
+                        _t: PhantomData,
+                        $( $slot: $submeta::thaw(from)?, ) *
+                    })
                 }
             }
 
-            impl<$t> Meta<$t> for CollectionMeta<$t>
-                where $t: Clone, $($restraints)*
+            impl<$t, H> Meta<$t> for CollectionMeta<$t, H>
+                where H: CryptoHash,
+                      $t: Clone + Freeze<H>,
+                      $($restraints)*
             {
                 fn from_t(t: &$t) -> Self {
                         CollectionMeta {
@@ -305,9 +332,11 @@ macro_rules! collection {
 
             macro_rules! submeta {
                 ($_submeta:ident, $_subtype:ty, $_slot:ident) => (
-                    impl<'a, $t> SubMeta<$_submeta<$_subtype>>
-                        for CollectionMeta<T>
-                        where $t: Clone, $($restraints)*
+                    impl<'a, $t, H> SubMeta<$_submeta<$_subtype>>
+                        for CollectionMeta<T, H>
+                        where H: CryptoHash,
+                              $t: Freeze<H>,
+                              $($restraints)*
                     {
                         fn submeta(&self) -> Cow<$_submeta<$_subtype>> {
                             Cow::Borrowed(&self.$_slot)
@@ -322,25 +351,21 @@ macro_rules! collection {
         }
 
         pub type $collection<T, B> =
-            Collection<T, self::col::CollectionMeta<T>, $h, B>;
+            Collection<T, self::col::CollectionMeta<T, $h>, $h, B>;
     )
 }
 
 impl<T, M, H, B> Freeze<H> for Collection<T, M, H, B>
     where T: Weight + Freeze<H>,
-          <H as CryptoHash>::Digest: Freeze<H>,
           M: Meta<T> + Freeze<H>,
           H: CryptoHash,
           B: Backend<Node<T, M, H>, H> + Clone
 {
-    fn freeze(&self,
-              into: &mut WriteHashing<Digest = H::Digest>,
-              deps: Deps<H>)
-              -> io::Result<H::Digest> {
-        Ok(into.fin())
+    fn freeze(&self, _: &mut Sink<H>) -> io::Result<()> {
+        Ok(())
     }
 
-    fn thaw(from: &mut Read) -> io::Result<Self> {
+    fn thaw(_: &mut Source<H>) -> io::Result<Self> {
         panic!()
     }
 }

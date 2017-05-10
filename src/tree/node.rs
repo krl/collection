@@ -1,11 +1,11 @@
 use std::collections::VecDeque;
-use std::io::{self, Read};
+use std::io;
 use std::marker::PhantomData;
 
 use std::borrow::Cow;
 
 use tree::weight::Weight;
-use freezer::{Freeze, Deps, Location, WriteHashing, CryptoHash};
+use freezer::{Freeze, Location, CryptoHash, Sink, Source};
 use meta::{Meta, SubMeta};
 
 use meta::checksum::CheckSum;
@@ -138,18 +138,6 @@ impl<T, M, H> Node<T, M, H>
 
     pub fn len(&self) -> usize {
         self.children.len()
-    }
-
-    pub fn bottom(&self) -> bool {
-        if self.children.len() == 0 {
-            true
-        } else {
-            if let Child::Leaf(_) = self.children[0] {
-                true
-            } else {
-                false
-            }
-        }
     }
 
     pub fn weight(&self, divisor: usize) -> usize {
@@ -289,7 +277,7 @@ impl<T, M, H> Node<T, M, H>
         }
     }
 
-    pub fn has_leaf_children(&self) -> bool {
+    pub fn bottom(&self) -> bool {
         match self.children.get(0) {
             Some(&Child::Node { .. }) => false,
             _ => true,
@@ -325,73 +313,43 @@ impl<T, M, H> Freeze<H> for Node<T, M, H>
           M: Meta<T> + Freeze<H>,
           H: CryptoHash
 {
-    fn dependencies(&self) -> Deps<H> {
-        let hashes = vec![];
-        for child in &self.children {
-            match child {
-                &Child::Node { .. } => {}
-                &Child::Leaf { .. } => break,
-            }
-        }
-        Deps::new(hashes)
-    }
-
-    fn freeze(&self,
-              into: &mut WriteHashing<Digest = H::Digest>,
-              deps: Deps<H>)
-              -> io::Result<H::Digest> {
+    fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
         let len = self.len();
-        let has_leaf_children = self.has_leaf_children();
-        Freeze::<H>::freeze(&has_leaf_children, into, Deps::none())?;
-        Freeze::<H>::freeze(&len, into, Deps::none())?;
+        let bottom = self.bottom();
+        len.freeze(into)?;
+        bottom.freeze(into)?;
         for i in 0..len {
             match self.children[i] {
-                Child::Node { .. } => {
-                    Freeze::<H>::freeze(&deps[i], into, Deps::none())?;
+                Child::Leaf(ref t) => {
+                    t.freeze(into)?;
                 }
-                _ => unreachable!(),
-            }
-        }
-        let hash = into.fin();
-        // Write the metadata without hashing it
-        if !has_leaf_children {
-            for i in 0..len {
-                match self.children[i] {
-                    Child::Node { ref meta, .. } => {
-                        Freeze::<H>::freeze(meta, into, Deps::none())?;
-                    }
-                    _ => unreachable!(),
+                Child::Node {
+                    ref location,
+                    ref meta,
+                } => {
+                    location.freeze(into)?;
+                    meta.freeze(&mut into.bypass_hashing())?;
                 }
             }
         }
-        Ok(hash)
+        Ok(())
     }
 
-    fn thaw(from: &mut Read) -> io::Result<Self> {
-        let len = Freeze::<H>::thaw(from)?;
-        let has_leaf_children = Freeze::<H>::thaw(from)?;
+    fn thaw(from: &mut Source<H>) -> io::Result<Self> {
+        let len = usize::thaw(from)?;
+        let bottom = bool::thaw(from)?;
+        let mut node = Node::new();
 
-        if has_leaf_children {
-            let mut node = Node::new();
+        if bottom {
             for _ in 0..len {
-                node.children
-                    .push_back(Child::new_leaf(Freeze::<H>::thaw(from)?))
+                node.children.push_back(Child::new_leaf(T::thaw(from)?))
             }
-            Ok(node)
         } else {
-            let mut locations = vec![];
-            let mut metas = vec![];
             for _ in 0..len {
-                locations.push(Location::new_from_hash(H::read_digest(from)?));
+                node.children.push_back(Child::new_node(Location::thaw(from)?,
+                                                        M::thaw(from)?))
             }
-            for _ in 0..len {
-                metas.push(Freeze::<H>::thaw(from)?);
-            }
-            let mut node = Node::new();
-            for (loc, meta) in locations.drain(..).zip(metas.drain(..)) {
-                node.children.push_back(Child::new_node(loc, meta));
-            }
-            Ok(node)
         }
+        Ok(node)
     }
 }

@@ -2,10 +2,11 @@ use seahash::SeaHasher;
 
 use std::marker::PhantomData;
 use std::hash::{Hash, Hasher};
+use std::io;
 
 use meta::{Meta, SubMeta};
 
-use freezer::{CryptoHash, Backend, Freeze};
+use freezer::{Backend, Freeze, CryptoHash, Sink, Source};
 use tree::node::Node;
 use tree::weight::Weight;
 
@@ -42,7 +43,7 @@ impl<T> Meta<T> for CheckSum<u64>
 
 impl<T, M, H, B> PartialEq for Collection<T, M, H, B>
     where T: Weight + Freeze<H> + Clone,
-          M: Meta<T> + SubMeta<CheckSum<u64>>,
+          M: Meta<T> + SubMeta<CheckSum<u64>> + Freeze<H>,
           H: CryptoHash,
           B: Backend<Node<T, M, H>, H>
 {
@@ -55,11 +56,23 @@ impl<T, M, H, B> PartialEq for Collection<T, M, H, B>
 
 impl<T, M, H, B> Hash for Collection<T, M, H, B>
     where T: Weight + Freeze<H> + Clone,
-          M: Meta<T> + SubMeta<CheckSum<u64>>,
+          M: Meta<T> + SubMeta<CheckSum<u64>> + Freeze<H>,
           H: CryptoHash,
           B: Backend<Node<T, M, H>, H>
 {
     fn hash<I: Hasher>(&self, state: &mut I) {
         self.meta.as_ref().map(|m| m.submeta().hash(state));
+    }
+}
+
+impl<T, H> Freeze<H> for CheckSum<T>
+    where H: CryptoHash,
+          T: Freeze<H>
+{
+    fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
+        self.0.freeze(into)
+    }
+    fn thaw(from: &mut Source<H>) -> io::Result<Self> {
+        Ok(CheckSum(T::thaw(from)?))
     }
 }

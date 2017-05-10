@@ -1,7 +1,9 @@
 use seahash::SeaHasher;
+use freezer::{Freeze, CryptoHash, Sink, Source};
 
 use std::marker::PhantomData;
 use std::hash::{Hash, Hasher};
+use std::io;
 
 use std::borrow::Cow;
 
@@ -20,7 +22,7 @@ pub trait Keyed {
     fn value_mut(&mut self) -> &mut Self::Value;
 }
 
-/// A key, K is usually `T::Key` where `T: Keyed`
+/// A key, K is `T::Key` where `T: Keyed`
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Key<K>(K);
 #[derive(Clone, PartialEq)]
@@ -40,15 +42,15 @@ impl<T> ValSum<T> {
     }
 }
 
-impl<K> Key<K> {
-    /// Construct a new Key
-    pub fn new(key: K) -> Self {
-        Key(key)
-    }
-}
+// impl<T> Key<T> where T: Keyed {
+//     /// Construct a new Key
+//     pub fn new(key: K) -> Self {
+//         Key(key)
+//     }
+// }
 
 impl<T> Meta<T> for Key<T::Key>
-    where T: Keyed
+    where T: Clone + Keyed
 {
     fn from_t(t: &T) -> Self {
         Key(t.key().clone())
@@ -60,8 +62,8 @@ impl<T> Meta<T> for Key<T::Key>
     }
 }
 
-impl<T> Select<T> for Key<T::Key>
-    where T: Keyed
+impl<T> Select<T> for Key<T>
+    where T: Clone + Ord + PartialEq
 {
     fn select(&mut self, other: Cow<Self>) -> Selection {
         if self.0 == other.0 {
@@ -116,5 +118,41 @@ impl<M> SubMeta<CheckSum<u64>> for M
 
         let check = CheckSum::new(k.inner() ^ v.inner());
         Cow::Owned(check)
+    }
+}
+
+impl<T, H> Freeze<H> for KeySum<T>
+    where H: CryptoHash,
+          T: Freeze<H>
+{
+    fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
+        self.0.freeze(into)
+    }
+    fn thaw(from: &mut Source<H>) -> io::Result<Self> {
+        Ok(KeySum(T::thaw(from)?))
+    }
+}
+
+impl<T, H> Freeze<H> for ValSum<T>
+    where H: CryptoHash,
+          T: Freeze<H>
+{
+    fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
+        self.0.freeze(into)
+    }
+    fn thaw(from: &mut Source<H>) -> io::Result<Self> {
+        Ok(ValSum(T::thaw(from)?))
+    }
+}
+
+impl<K, H> Freeze<H> for Key<K>
+    where H: CryptoHash,
+          K: Freeze<H>
+{
+    fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
+        self.0.freeze(into)
+    }
+    fn thaw(from: &mut Source<H>) -> io::Result<Self> {
+        Ok(Key(K::thaw(from)?))
     }
 }

@@ -17,7 +17,7 @@ use tree::weight::Weight;
 pub trait VectorOps<T, M, H, B>
     where Self: Sized,
           T: Weight + Freeze<H>,
-          M: Meta<T> + Clone,
+          M: Meta<T> + Clone + Freeze<H>,
           B: Backend<Node<T, M, H>, H>,
           H: CryptoHash
 {
@@ -41,7 +41,7 @@ pub trait VectorOps<T, M, H, B>
 
 impl<T, M, H, B> VectorOps<T, M, H, B> for Collection<T, M, H, B>
     where T: Weight + Freeze<H>,
-          M: Meta<T> + SubMeta<Cardinality<usize>> + Clone,
+          M: Meta<T> + SubMeta<Cardinality<usize>> + Freeze<H>,
           H: CryptoHash,
           B: Backend<Node<T, M, H>, H>
 {
@@ -184,11 +184,11 @@ mod tests {
     use meta::checksum::CheckSum;
     use collection::Collection;
     use super::VectorOps;
-    use freezer::VoidHash;
+    use freezer::BlakeWrap;
 
     use std::hash::Hash;
 
-    collection!(Vector<T, VoidHash> {
+    collection!(Vector<T, BlakeWrap> {
         cardinality: Cardinality<usize>,
         checksum: CheckSum<u64>,
     } where T: Hash);

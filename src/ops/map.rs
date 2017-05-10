@@ -1,9 +1,9 @@
 use std::hash::Hash;
 use std::cmp::Ord;
-use std::io::{self, Read};
+use std::io;
 use std::borrow::Cow;
 
-use freezer::{WriteHashing, Freeze, CryptoHash, Deps, Backend};
+use freezer::{CryptoHash, Sink, Source, Backend, Freeze};
 
 use collection::Collection;
 
@@ -67,19 +67,15 @@ impl<K, V, H> Freeze<H> for KV<K, V>
           V: Freeze<H>,
           H: CryptoHash
 {
-    fn freeze(&self,
-              into: &mut WriteHashing<Digest = H::Digest>,
-              _: Deps<H>)
-              -> io::Result<H::Digest> {
-        Freeze::<H>::freeze(&self.k, into, Deps::none())?;
-        Freeze::<H>::freeze(&self.v, into, Deps::none())?;
-        Ok(into.fin())
+    fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
+        self.k.freeze(into)?;
+        self.v.freeze(into);
     }
 
-    fn thaw(from: &mut Read) -> io::Result<Self> {
+    fn thaw(from: &mut Source<H>) -> io::Result<Self> {
         Ok(KV {
-               k: Freeze::<H>::thaw(from)?,
-               v: Freeze::<H>::thaw(from)?,
+               k: K::thaw(from)?,
+               v: V::thaw(from)?,
            })
     }
 }
@@ -88,6 +84,7 @@ impl<K, V, H> Freeze<H> for KV<K, V>
 pub trait MapOps<K, V, M>
     where Self: Sized,
           M: Meta<KV<K, V>>,
+          KV<K, V>: Keyed,
           K: Weight + Clone + Ord,
           V: Clone
 {
@@ -106,6 +103,7 @@ pub trait MapOps<K, V, M>
 pub trait MapOpsKeySum<K, V, M>
     where Self: MapOps<K, V, M>,
           M: Meta<KV<K, V>>,
+          KV<K, V>: Keyed,
           K: Weight + Clone + Ord,
           V: Clone
 {
@@ -115,13 +113,14 @@ pub trait MapOpsKeySum<K, V, M>
 
 impl<K, V, M, H, B> MapOps<K, V, M> for Collection<KV<K, V>, M, H, B>
     where H: CryptoHash,
-          M: Meta<KV<K, V>> + SubMeta<Key<K>>,
+          M: Meta<KV<K, V>> + SubMeta<Key<KV<K, V>>> + Freeze<H>,
+          KV<K, V>: Keyed + Freeze<H>,
           K: Hash + Ord + Clone + Freeze<H>,
           B: Backend<Node<KV<K, V>, M, H>, H>,
           V: Clone + Freeze<H>
 {
     fn insert(&mut self, key: K, val: V) -> io::Result<()> {
-        let mut search = Key::new(key.clone());
+        let mut search = key;
         let branch =
             Branch::<_, _, Beginning, _, _>::new_full(self.root.clone(),
                                                       &mut search,
@@ -203,7 +202,8 @@ impl<K, V, M, H, B> MapOps<K, V, M> for Collection<KV<K, V>, M, H, B>
 
 impl<K, V, M, H, B> MapOpsKeySum<K, V, M> for Collection<KV<K, V>, M, H, B>
     where H: CryptoHash,
-          M: Meta<KV<K, V>> + SubMeta<Key<K>> + SubMeta<KeySum<u64>>,
+          M: Meta<KV<K, V>> + SubMeta<Key<KV<K, V>>>,
+          M: SubMeta<KeySum<u64>> + Freeze<H>,
           K: Hash + Ord + Clone + Freeze<H>,
           V: Clone + Freeze<H>,
           B: Backend<Node<KV<K, V>, M, H>, H>
@@ -222,18 +222,20 @@ mod tests {
     use std::hash::Hash;
 
     use meta::key::{Key, Keyed, KeySum, ValSum};
-    use freezer::VoidHash;
+    use freezer::BlakeWrap;
 
     use collection::Collection;
 
     use super::MapOps;
     use super::MapOpsKeySum;
 
-    collection!(Map<T, VoidHash> {
+    collection!(Map<T, BlakeWrap> {
         key: Key<T::Key>,
         keysum: KeySum<u64>,
         valsum: ValSum<u64>,
-    } where T: Keyed, T::Key: Hash, T::Value: Hash);
+    } where T: Keyed,
+            T::Key: Hash + Freeze<BlakeWrap>,
+            T::Value: Hash);
 
     #[test]
     fn insert() {

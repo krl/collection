@@ -2,8 +2,7 @@ use std::mem;
 use std::io;
 use std::borrow::Cow;
 
-use freezer::{Freeze, CryptoHash, Backend};
-use freezer::freezer::{Freezer, Location};
+use freezer::{Freezer, Freeze, CryptoHash, Backend, Location};
 
 use tree::weight::Weight;
 use tree::branch::Branch;
@@ -48,7 +47,7 @@ impl<'a, T, M, R, H, B> Iter<'a, T, M, R, H, B>
 impl<'a, T, M, R, H, B> Iterator for Iter<'a, T, M, R, H, B>
     where H: 'a + CryptoHash,
           T: 'a + Weight + Freeze<H>,
-          M: 'a + Meta<T>,
+          M: 'a + Meta<T> + Freeze<H>,
           B: 'a + Backend<Node<T, M, H>, H>,
           R: Relative
 {
@@ -94,7 +93,7 @@ impl<'a, T, M, R, H, B> Iterator for Iter<'a, T, M, R, H, B>
 impl<T, M, H, B> Collection<T, M, H, B>
     where H: CryptoHash,
           T: Weight + Freeze<H>,
-          M: Meta<T>,
+          M: Meta<T> + Freeze<H>,
           B: Backend<Node<T, M, H>, H>
 {
     /// Returns an iterator over Collection

@@ -80,7 +80,7 @@ impl<T, M, R, H, B> Clone for Level<T, M, R, H, B>
 
 impl<T, M, R, H, B> Level<T, M, R, H, B>
     where T: Weight + Freeze<H>,
-          M: Meta<T>,
+          M: Meta<T> + Freeze<H>,
           R: Relative,
           H: CryptoHash,
           B: Backend<Node<T, M, H>, H>,
@@ -438,7 +438,7 @@ impl<T, M, R, H, B> Level<T, M, R, H, B>
 
 impl<T, M, R, H, B> Level<T, M, R, H, B>
     where T: Weight + Freeze<H> + Clone,
-          M: Meta<T> + Clone,
+          M: Meta<T> + Clone + Freeze<H>,
           H: CryptoHash,
           Node<T, M, H>: Clone,
           B: Backend<Node<T, M, H>, H> + Clone

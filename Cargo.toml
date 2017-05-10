@@ -5,11 +5,12 @@ documentation = "https://krl.github.io/collection/doc/collection/index.html"
 license = "GPL-3.0"
 name = "collection"
 repository = "https://github.com/krl/collection"
-version = "0.1.2"
+version = "0.1.3"
 
 [dependencies]
 rand = "0.3.15"
 seahash = "3.0.4"
+tempdir = "0.3.5"
 trait-group = "0.1.0"
 
 [dependencies.freezer]

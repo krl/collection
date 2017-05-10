@@ -3,8 +3,7 @@ use std::io;
 
 use std::borrow::Cow;
 
-use freezer::{Freeze, Location, CryptoHash, Backend};
-use freezer::freezer::Freezer;
+use freezer::{Freezer, Freeze, Location, CryptoHash, Backend};
 
 use tree::weight::Weight;
 use tree::node::{Node, Child, RemoveResult, InsertResult};
@@ -44,7 +43,7 @@ impl<T, M, R, H, B> Clone for Branch<T, M, R, H, B>
 impl<T, M, R, H, B> Branch<T, M, R, H, B>
     where T: Weight + Freeze<H>,
           H: CryptoHash,
-          M: Meta<T> + Clone,
+          M: Meta<T> + Clone + Freeze<H>,
           R: Relative,
           B: Backend<Node<T, M, H>, H>
 {
@@ -472,7 +471,7 @@ impl<T, M, R, H, B> Branch<T, M, R, H, B>
 
 impl<'a, T, M, R, H, B> Branch<T, M, R, H, B>
     where T: Weight + Freeze<H> + Clone,
-          M: Meta<T>,
+          M: Meta<T> + Freeze<H>,
           R: Relative,
           H: CryptoHash
 {
@@ -526,7 +525,7 @@ impl<'a, T, M, R, H, B> Branch<T, M, R, H, B>
 
 impl<T, M, R, H, B> Branch<T, M, R, H, B>
     where T: Weight + Freeze<H> + Clone,
-          M: Meta<T>,
+          M: Meta<T> + Freeze<H>,
           R: Relative,
           H: CryptoHash,
           B: Backend<Node<T, M, H>, H>
