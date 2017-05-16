@@ -3,16 +3,16 @@ use std::io;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 
-use freezer::{Freezer, Freeze, Location, CryptoHash, Backend};
+use freezer::{Freezer, Freeze, Location, CryptoHash, Backend, Mutable};
 use tree::weight::Weight;
-use tree::node::{Node, Child, InsertResult, RemoveResult};
+use tree::node::{Node, Child, MutChild, InsertResult, RemoveResult};
 use meta::{Meta, SubMeta, Select, Selection, Found};
 
 pub trait Relative {
     fn at(i: usize, len: usize) -> usize;
     fn insert(i: usize, len: usize) -> usize;
     fn after(i: usize, len: usize) -> usize;
-    fn order<T>(&mut T, &mut T);
+    fn order<'a, T>(&mut T, &mut T);
     fn from_end() -> bool;
 }
 
@@ -106,7 +106,7 @@ impl<T, M, R, H, B> Level<T, M, R, H, B>
             (*freezer.get(&with)?).meta().map(|cow| cow.into_owned());
         match new_meta {
             Some(meta) => {
-                let child = self.child_mut(freezer)?.expect("valid");
+                let mut child = self.child_mut(freezer)?;
                 *child = Child::new_node(with.clone(), meta);
                 Ok(())
             }
@@ -180,33 +180,18 @@ impl<T, M, R, H, B> Level<T, M, R, H, B>
         self.child_at(self.ofs, freezer)
     }
 
-    // pub fn first<'a>(&self,
-    //                  freezer: &'a Freezer<Node<T, M, H>, H, B>)
-    //                  -> io::Result<Option<Cow<'a, Child<T, M, H>>>> {
-    //     self.child_at(0, freezer)
-    // }
-
     pub fn child_mut<'a>(&mut self,
                          freezer: &'a mut Freezer<Node<T, M, H>, H, B>)
-                         -> io::Result<Option<&'a mut Child<T, M, H>>> {
+                         -> io::Result<MutChild<'a, T, M, H>> {
         let node = freezer.get_mut(&mut self.location)?;
         let len = node.len();
-        Ok(node.child_mut(R::at(self.ofs, len)))
+        Ok(MutChild::new(node, R::at(self.ofs, len)))
+        //Ok(node.child_mut(R::at(self.ofs, len)))
     }
 
     pub fn location(&self) -> &Location<H> {
         &self.location
     }
-
-    // pub fn empty(&self,
-    //              freezer: &Freezer<Node<T, M, H>, H, B>)
-    //              -> io::Result<bool> {
-    //     Ok(freezer.get(&self.location)?.len() == 0)
-    // }
-
-    // pub fn offset_mut(&mut self) -> &mut usize {
-    //     &mut self.ofs
-    // }
 
     pub fn location_mut(&mut self) -> &mut Location<H> {
         &mut self.location
@@ -254,7 +239,7 @@ impl<T, M, R, H, B> Level<T, M, R, H, B>
                         child: Child<T, M, H>,
                         freezer: &mut Freezer<Node<T, M, H>, H, B>)
                         -> io::Result<()> {
-        let node = freezer.get_mut(&mut self.location)?;
+        let mut node = freezer.get_mut(&mut self.location)?;
         let len = node.len();
         node.insert(R::after(self.ofs, len), child);
         Ok(())
@@ -264,7 +249,7 @@ impl<T, M, R, H, B> Level<T, M, R, H, B>
                   child: Child<T, M, H>,
                   freezer: &mut Freezer<Node<T, M, H>, H, B>)
                   -> io::Result<()> {
-        let node = freezer.get_mut(&mut self.location)?;
+        let mut node = freezer.get_mut(&mut self.location)?;
         let len = node.len();
         node.insert(R::insert(self.ofs, len), child);
         Ok(())
@@ -276,7 +261,7 @@ impl<T, M, R, H, B> Level<T, M, R, H, B>
                     freezer: &mut Freezer<Node<T, M, H>, H, B>)
                     -> io::Result<InsertResult> {
         let weight = t.weight() / divisor;
-        let node = freezer.get_mut(&mut self.location)?;
+        let mut node = freezer.get_mut(&mut self.location)?;
         let len = node.len();
         let self_weight = node.insert_t(R::insert(self.ofs, len), t, divisor);
 
@@ -301,7 +286,7 @@ impl<T, M, R, H, B> Level<T, M, R, H, B>
               freezer: &mut Freezer<Node<T, M, H>, H, B>)
               -> io::Result<Option<Node<T, M, H>>> {
         {
-            let node = freezer.get_mut(&mut self.location)?;
+            let mut node = freezer.get_mut(&mut self.location)?;
             match node.remove(self.ofs) {
                 Some(Child::Node { location, .. }) => {
                     self.ofs = self.ofs.saturating_sub(1);
@@ -337,10 +322,10 @@ impl<T, M, R, H, B> Level<T, M, R, H, B>
                  -> io::Result<Child<T, M, H>> {
         let mut new;
         {
-            let node = freezer.get_mut(&mut self.location)?;
+            let mut node = freezer.get_mut(&mut self.location)?;
             let len = node.len();
             new = node.split(R::after(self.ofs, len));
-            R::order(node, &mut new);
+            R::order(&mut *node, &mut new);
         }
         let meta =
             new.meta().expect("split cannot produce empty nodes").into_owned();

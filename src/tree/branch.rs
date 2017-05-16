@@ -175,16 +175,16 @@ impl<T, M, R, H, B> Branch<T, M, R, H, B>
         }
     }
 
-    pub fn leaf_mut<'a>(&mut self,
-                        freezer: &'a mut Freezer<Node<T, M, H>, H, B>)
-                        -> io::Result<Option<&'a mut T>> {
-        if let Some(&mut Child::Leaf(ref mut t)) =
-            self.bottom_mut().child_mut(freezer)? {
-            Ok(Some(t))
-        } else {
-            Ok(None)
-        }
-    }
+    // pub fn leaf_mut<'a>(&mut self,
+    //                     freezer: &'a mut Freezer<Node<T, M, H>, H, B>)
+    //                     -> io::Result<Option<&'a mut T>> {
+    //     if let Some(&mut Child::Leaf(ref mut t)) =
+    //         self.bottom_mut().child_mut(freezer)? {
+    //         Ok(Some(t))
+    //     } else {
+    //         Ok(None)
+    //     }
+    // }
 
     fn push(&mut self, loc: Location<H>) {
         self.levels.push(Level::new(loc));
@@ -276,30 +276,11 @@ impl<T, M, R, H, B> Branch<T, M, R, H, B>
                   t: T,
                   freezer: &mut Freezer<Node<T, M, H>, H, B>)
                   -> io::Result<()> {
-        self.leaf_mut(freezer)?.map(|l| *l = t);
+        panic!();
+        //self.leaf_mut(freezer)?.map(|l| *l = t);
         self.propagate(freezer)?;
         Ok(())
     }
-
-    // pub fn rebalance(&mut self,
-    //                  old_weight: usize,
-    //                  new_weight: usize,
-    //                  freezer: &mut Freezer<Node<T, M, H>, H, B>) {
-    //     self.propagate(freezer)?;
-    //     if new_weight != old_weight {
-    //         if old_weight > 0 {
-    //             self.merge(old_weight, freezer)?;
-    //             self.propagate(freezer)?;
-    //         }
-
-    //         if new_weight > 0 {
-    //             self.ensure_depth(new_weight + 1, freezer)?;
-    //             self.split(new_weight, freezer)?;
-    //             self.propagate(freezer)?;
-    //         }
-    //         self.find_first_root(freezer)?;
-    //     }
-    // }
 
     pub fn remove(&mut self,
                   divisor: usize,

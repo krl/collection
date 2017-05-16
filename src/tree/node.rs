@@ -1,11 +1,12 @@
 use std::collections::VecDeque;
 use std::io;
+use std::ops::{Deref, DerefMut};
 use std::marker::PhantomData;
 
 use std::borrow::Cow;
 
 use tree::weight::Weight;
-use freezer::{Freeze, Location, CryptoHash, Sink, Source};
+use freezer::{Freeze, Location, CryptoHash, Sink, Source, Mutable};
 use meta::{Meta, SubMeta};
 
 use meta::checksum::CheckSum;
@@ -15,6 +16,45 @@ pub enum Child<T, M, H>
 {
     Node { location: Location<H>, meta: M },
     Leaf(T),
+}
+
+pub struct MutChild<'a, T, M, H>
+    where H: CryptoHash,
+          T: 'a,
+          M: 'a
+{
+    inner: Mutable<'a, Node<T, M, H>>,
+    index: usize,
+}
+
+impl<'a, T, M, H> MutChild<'a, T, M, H>
+    where H: CryptoHash,
+          T: 'a,
+          M: 'a
+{
+    pub fn new(inner: Mutable<'a, Node<T, M, H>>, index: usize) -> Self {
+        MutChild { inner, index }
+    }
+}
+
+impl<'a, T, M, H> Deref for MutChild<'a, T, M, H>
+    where H: CryptoHash,
+          Node<T, M, H>: Clone
+{
+    type Target = Child<T, M, H>;
+
+    fn deref(&self) -> &Self::Target {
+        &(*self.inner).children[self.index]
+    }
+}
+
+impl<'a, T, M, H> DerefMut for MutChild<'a, T, M, H>
+    where H: CryptoHash,
+          Node<T, M, H>: Clone
+{
+    fn deref_mut(&mut self) -> &mut Child<T, M, H> {
+        &mut (*self.inner).children[self.index]
+    }
 }
 
 impl<T, M, H> Child<T, M, H>
@@ -256,9 +296,9 @@ impl<T, M, H> Node<T, M, H>
         children.remove(ofs)
     }
 
-    pub fn child_mut(&mut self, ofs: usize) -> Option<&mut Child<T, M, H>> {
-        self.children.get_mut(ofs)
-    }
+    // pub fn child_mut(&mut self, ofs: usize) -> Option<ChildMut<T, M, H>> {
+    //     self.children.get_mut(ofs)
+    // }
 
     pub fn child_node_location(&self, ofs: usize) -> Option<&Location<H>> {
         match self.child(ofs) {

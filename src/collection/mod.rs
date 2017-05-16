@@ -271,7 +271,7 @@ macro_rules! collection {
             use std::io::{self, Read};
             use tree::weight::Weight;
             use tree::node::Node;
-            use freezer::{Freeze, CryptoHash, Backend, Sink, Source};
+            use freezer::{Freeze, CryptoHash, Sink, Source};
             use meta::{Meta, SubMeta};
 
             use super::*;
