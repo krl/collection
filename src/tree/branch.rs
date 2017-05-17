@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use freezer::{Freezer, Freeze, Location, CryptoHash, Backend};
 
 use tree::weight::Weight;
-use tree::node::{Node, Child, RemoveResult, InsertResult};
+use tree::node::{Node, Child, MutChild, RemoveResult, InsertResult};
 use tree::level::{Level, Relative, Opposite, Beginning, End};
 use meta::{Meta, Select, Selection, Found, SubMeta};
 
@@ -175,16 +175,11 @@ impl<T, M, R, H, B> Branch<T, M, R, H, B>
         }
     }
 
-    // pub fn leaf_mut<'a>(&mut self,
-    //                     freezer: &'a mut Freezer<Node<T, M, H>, H, B>)
-    //                     -> io::Result<Option<&'a mut T>> {
-    //     if let Some(&mut Child::Leaf(ref mut t)) =
-    //         self.bottom_mut().child_mut(freezer)? {
-    //         Ok(Some(t))
-    //     } else {
-    //         Ok(None)
-    //     }
-    // }
+    pub fn leaf_mut<'a>(&mut self,
+                        freezer: &'a mut Freezer<Node<T, M, H>, H, B>)
+                        -> io::Result<MutChild<'a, T, M, H>> {
+        self.bottom_mut().child_mut(freezer)
+    }
 
     fn push(&mut self, loc: Location<H>) {
         self.levels.push(Level::new(loc));
@@ -276,8 +271,7 @@ impl<T, M, R, H, B> Branch<T, M, R, H, B>
                   t: T,
                   freezer: &mut Freezer<Node<T, M, H>, H, B>)
                   -> io::Result<()> {
-        panic!();
-        //self.leaf_mut(freezer)?.map(|l| *l = t);
+        *self.leaf_mut(freezer)? = Child::new_leaf(t);
         self.propagate(freezer)?;
         Ok(())
     }

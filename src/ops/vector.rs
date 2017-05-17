@@ -178,7 +178,7 @@ mod tests {
     use test_common::LOTS;
     use test_common::LESS;
 
-    const SPLITS: usize = 40;
+    const SPLITS: usize = 10;
 
     use meta::cardinality::Cardinality;
     use meta::checksum::CheckSum;
@@ -330,8 +330,6 @@ mod tests {
                 vec.push(i).unwrap()
             }
 
-            println!("i: {}", i);
-
             let (a, b) = vec.split(i).unwrap();
 
             let mut iter_a = a.iter();
@@ -359,8 +357,8 @@ mod tests {
 
         let mut split_points = vec![1];
 
-        for i in 0..100 {
-            split_points.push((LOTS / 100) * i);
+        for i in 0..SPLITS {
+            split_points.push((LOTS / SPLITS) * i);
         }
 
         split_points.push(LOTS - 1);

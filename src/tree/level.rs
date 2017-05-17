@@ -3,7 +3,7 @@ use std::io;
 use std::marker::PhantomData;
 use std::borrow::Cow;
 
-use freezer::{Freezer, Freeze, Location, CryptoHash, Backend, Mutable};
+use freezer::{Freezer, Freeze, Location, CryptoHash, Backend};
 use tree::weight::Weight;
 use tree::node::{Node, Child, MutChild, InsertResult, RemoveResult};
 use meta::{Meta, SubMeta, Select, Selection, Found};

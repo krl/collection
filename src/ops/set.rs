@@ -439,8 +439,6 @@ mod tests_disk {
     use freezer::BlakeWrap;
     use std::path::PathBuf;
 
-    use super::SetOpsCheckSum;
-
     collection!(Set<T, BlakeWrap> {
         max: Max<T>,
         checksum: CheckSum<u64>,
@@ -464,7 +462,7 @@ mod tests_disk {
         }
 
         let hash = set.persist().unwrap();
-        let mut restored = Set::<usize, PathBuf>::restore(hash, path).unwrap();
+        let restored = Set::<usize, PathBuf>::restore(hash, path).unwrap();
 
         assert!(set == restored);
 

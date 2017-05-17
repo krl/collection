@@ -17,9 +17,11 @@ pub trait Keyed {
     type Key: Weight + Ord + Clone;
     type Value;
 
+    fn new(Self::Key, Self::Value) -> Self;
     fn key(&self) -> &Self::Key;
-    fn value(&self) -> &Self::Value;
-    fn value_mut(&mut self) -> &mut Self::Value;
+    fn val(&self) -> &Self::Value;
+    fn val_mut(&mut self) -> &mut Self::Value;
+    fn into_val(self) -> Self::Value;
 }
 
 /// A key, K is `T::Key` where `T: Keyed`
@@ -42,15 +44,15 @@ impl<T> ValSum<T> {
     }
 }
 
-// impl<T> Key<T> where T: Keyed {
-//     /// Construct a new Key
-//     pub fn new(key: K) -> Self {
-//         Key(key)
-//     }
-// }
+impl<K> Key<K> {
+    /// Construct a new Key
+    pub fn new(key: K) -> Self {
+        Key(key)
+    }
+}
 
 impl<T> Meta<T> for Key<T::Key>
-    where T: Clone + Keyed
+    where T: Keyed + Clone
 {
     fn from_t(t: &T) -> Self {
         Key(t.key().clone())
@@ -62,8 +64,9 @@ impl<T> Meta<T> for Key<T::Key>
     }
 }
 
-impl<T> Select<T> for Key<T>
-    where T: Clone + Ord + PartialEq
+impl<T> Select<T> for Key<T::Key>
+    where T: Keyed + Clone,
+          T::Key: Clone + Ord + PartialEq
 {
     fn select(&mut self, other: Cow<Self>) -> Selection {
         if self.0 == other.0 {
@@ -98,7 +101,7 @@ impl<T> Meta<T> for ValSum<u64>
 {
     fn from_t(t: &T) -> Self {
         let mut hasher = SeaHasher::new();
-        t.value().hash(&mut hasher);
+        t.val().hash(&mut hasher);
         ValSum(hasher.finish())
     }
 

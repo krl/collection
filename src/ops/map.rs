@@ -13,7 +13,7 @@ use meta::key::{Key, KeySum, Keyed};
 use tree::branch::{Branch, BranchResult};
 use tree::level::{Beginning, End};
 use tree::weight::Weight;
-use tree::node::Node;
+use tree::node::{Node, Child};
 
 /// A Key-Value pair
 #[derive(Clone, Debug)]
@@ -22,34 +22,30 @@ pub struct KV<K, V> {
     v: V,
 }
 
-impl<K, V> KV<K, V>
-    where K: Weight + Ord + PartialEq,
-          V: Clone
-{
-    fn new(k: K, v: V) -> Self {
-        KV { k: k, v: v }
-    }
-    fn val(&self) -> &V {
-        &self.v
-    }
-    fn into_val(self) -> V {
-        self.v
-    }
-}
-
 impl<K, V> Keyed for KV<K, V>
     where K: Ord + Clone + Hash
 {
     type Key = K;
     type Value = V;
-    fn key(&self) -> &K {
+
+    fn new(k: Self::Key, v: Self::Value) -> Self {
+        KV { k, v }
+    }
+
+    fn key(&self) -> &Self::Key {
         &self.k
     }
-    fn value(&self) -> &V {
+
+    fn val(&self) -> &Self::Value {
         &self.v
     }
-    fn value_mut(&mut self) -> &mut V {
+
+    fn val_mut(&mut self) -> &mut Self::Value {
         &mut self.v
+    }
+
+    fn into_val(self) -> Self::Value {
+        self.v
     }
 }
 
@@ -63,13 +59,13 @@ impl<K, V> Weight for KV<K, V>
 }
 
 impl<K, V, H> Freeze<H> for KV<K, V>
-    where K: Freeze<H>,
+    where K: Ord + Freeze<H>,
           V: Freeze<H>,
           H: CryptoHash
 {
     fn freeze(&self, into: &mut Sink<H>) -> io::Result<()> {
         self.k.freeze(into)?;
-        self.v.freeze(into);
+        self.v.freeze(into)
     }
 
     fn thaw(from: &mut Source<H>) -> io::Result<Self> {
@@ -85,18 +81,28 @@ pub trait MapOps<K, V, M>
     where Self: Sized,
           M: Meta<KV<K, V>>,
           KV<K, V>: Keyed,
-          K: Weight + Clone + Ord,
-          V: Clone
+          <KV<K, V> as Keyed>::Key: Weight + Clone + Ord,
+          <KV<K, V> as Keyed>::Value: Clone
 {
     /// Insert a value `V` at key `K`
-    fn insert(&mut self, key: K, V) -> io::Result<()>;
+    fn insert(&mut self,
+              key: <KV<K, V> as Keyed>::Key,
+              val: <KV<K, V> as Keyed>::Value)
+              -> io::Result<()>;
     /// Remove value at key `K`
-    fn remove(&mut self, key: K) -> io::Result<Option<V>>;
+    fn remove(&mut self,
+              key: <KV<K, V> as Keyed>::Key)
+              -> io::Result<Option<<KV<K, V> as Keyed>::Value>>;
     /// Get a reference to the value at key `K`
-    fn get(&self, key: K) -> io::Result<Option<Cow<V>>>;
+    fn get(&self,
+           key: <KV<K, V> as Keyed>::Key)
+           -> io::Result<Option<Cow<<KV<K, V> as Keyed>::Value>>>;
     /// Mutate the value at key `K` with function F
-    fn mutate<F>(&mut self, key: K, f: F) -> io::Result<Option<()>>
-        where F: FnOnce(&mut V);
+    fn mutate<F>(&mut self,
+                 key: <KV<K, V> as Keyed>::Key,
+                 f: F)
+                 -> io::Result<Option<()>>
+        where F: FnOnce(&mut <KV<K, V> as Keyed>::Value);
 }
 
 /// Operations on a map with `KeySum` metadata
@@ -104,8 +110,8 @@ pub trait MapOpsKeySum<K, V, M>
     where Self: MapOps<K, V, M>,
           M: Meta<KV<K, V>>,
           KV<K, V>: Keyed,
-          K: Weight + Clone + Ord,
-          V: Clone
+          <KV<K, V> as Keyed>::Key: Weight + Clone + Ord,
+          <KV<K, V> as Keyed>::Value: Clone
 {
     /// Merge two maps, overwriting values from `self` with `b`
     fn merge(&mut self, b: &mut Self) -> io::Result<Self>;
@@ -113,14 +119,19 @@ pub trait MapOpsKeySum<K, V, M>
 
 impl<K, V, M, H, B> MapOps<K, V, M> for Collection<KV<K, V>, M, H, B>
     where H: CryptoHash,
-          M: Meta<KV<K, V>> + SubMeta<Key<KV<K, V>>> + Freeze<H>,
-          KV<K, V>: Keyed + Freeze<H>,
-          K: Hash + Ord + Clone + Freeze<H>,
-          B: Backend<Node<KV<K, V>, M, H>, H>,
-          V: Clone + Freeze<H>
+          M: Meta<KV<K, V>> + SubMeta<Key<<KV<K, V> as Keyed>::Key>>,
+          M: Freeze<H>,
+          KV<K, V>: Keyed + Weight + Freeze<H>,
+          <KV<K, V> as Keyed>::Key: Weight + Hash + Ord + Clone + Freeze<H>,
+          <KV<K, V> as Keyed>::Value: Clone + Freeze<H>,
+          B: Backend<Node<KV<K, V>, M, H>, H>
 {
-    fn insert(&mut self, key: K, val: V) -> io::Result<()> {
-        let mut search = key;
+    fn insert(&mut self,
+              key: <KV<K, V> as Keyed>::Key,
+              val: <KV<K, V> as Keyed>::Value)
+              -> io::Result<()> {
+        let mut search = Key::new(key.clone());
+
         let branch =
             Branch::<_, _, Beginning, _, _>::new_full(self.root.clone(),
                                                       &mut search,
@@ -148,7 +159,9 @@ impl<K, V, M, H, B> MapOps<K, V, M> for Collection<KV<K, V>, M, H, B>
         Ok(())
     }
 
-    fn remove(&mut self, key: K) -> io::Result<Option<V>> {
+    fn remove(&mut self,
+              key: <KV<K, V> as Keyed>::Key)
+              -> io::Result<Option<<KV<K, V> as Keyed>::Value>> {
         let mut key = Key::new(key);
 
         let branch =
@@ -166,7 +179,9 @@ impl<K, V, M, H, B> MapOps<K, V, M> for Collection<KV<K, V>, M, H, B>
         }
     }
 
-    fn get(&self, key: K) -> io::Result<Option<Cow<V>>> {
+    fn get(&self,
+           key: <KV<K, V> as Keyed>::Key)
+           -> io::Result<Option<Cow<<KV<K, V> as Keyed>::Value>>> {
         let mut key = Key::new(key);
         let res: BranchResult<_, _, Beginning, _, _> =
             Branch::new_full(self.root.clone(), &mut key, &self.freezer)?;
@@ -175,22 +190,33 @@ impl<K, V, M, H, B> MapOps<K, V, M> for Collection<KV<K, V>, M, H, B>
             BranchResult::Hit(branch) => {
                 Ok(branch.leaf(&self.freezer)?.map(|l| match l {
                     Cow::Owned(leaf) => Cow::Owned(leaf.into_val()),
-                    Cow::Borrowed(ref leaf) => Cow::Borrowed(leaf.val()),
+                    Cow::Borrowed(leaf) => Cow::Borrowed(leaf.val()),
                 }))
             }
             _ => Ok(None),
         }
     }
 
-    fn mutate<F>(&mut self, key: K, f: F) -> io::Result<Option<()>>
-        where F: FnOnce(&mut V)
+    fn mutate<F>(&mut self,
+                 key: <KV<K, V> as Keyed>::Key,
+                 f: F)
+                 -> io::Result<Option<()>>
+        where F: FnOnce(&mut <KV<K, V> as Keyed>::Value)
     {
         let mut key = Key::new(key);
         let res: BranchResult<_, _, Beginning, _, _> =
             Branch::new_full(self.root.clone(), &mut key, &self.freezer)?;
 
         if let BranchResult::Hit(mut branch) = res {
-            branch.leaf_mut(&mut self.freezer)?.map(|kv| f(kv.value_mut()));
+            {
+                let mut kv = branch.leaf_mut(&mut self.freezer)?;
+                match *kv {
+                    Child::Leaf(ref mut t) => {
+                        f(t.val_mut());
+                    }
+                    _ => panic!("not a leaf"),
+                }
+            }
             branch.propagate(&mut self.freezer)?;
             self.new_root(branch.into_root())?;
             Ok(Some(()))
@@ -202,14 +228,15 @@ impl<K, V, M, H, B> MapOps<K, V, M> for Collection<KV<K, V>, M, H, B>
 
 impl<K, V, M, H, B> MapOpsKeySum<K, V, M> for Collection<KV<K, V>, M, H, B>
     where H: CryptoHash,
-          M: Meta<KV<K, V>> + SubMeta<Key<KV<K, V>>>,
+          M: Meta<KV<K, V>> + SubMeta<Key<<KV<K, V> as Keyed>::Key>>,
           M: SubMeta<KeySum<u64>> + Freeze<H>,
-          K: Hash + Ord + Clone + Freeze<H>,
-          V: Clone + Freeze<H>,
+          KV<K, V>: Weight + Keyed + Freeze<H>,
+          <KV<K, V> as Keyed>::Key: Hash + Ord + Clone + Freeze<H>,
+          <KV<K, V> as Keyed>::Value: Clone + Freeze<H>,
           B: Backend<Node<KV<K, V>, M, H>, H>
 {
     fn merge(&mut self, b: &mut Self) -> io::Result<Self> {
-        self.union_using::<Key<K>, KeySum<u64>>(b)
+        self.union_using::<Key<<KV<K, V> as Keyed>::Key>, KeySum<u64>>(b)
     }
 }
 
@@ -234,7 +261,7 @@ mod tests {
         keysum: KeySum<u64>,
         valsum: ValSum<u64>,
     } where T: Keyed,
-            T::Key: Hash + Freeze<BlakeWrap>,
+            T::Key: Hash,
             T::Value: Hash);
 
     #[test]

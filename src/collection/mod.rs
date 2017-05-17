@@ -268,9 +268,8 @@ macro_rules! collection {
         mod col {
             use std::marker::PhantomData;
             use std::borrow::Cow;
-            use std::io::{self, Read};
+            use std::io;
             use tree::weight::Weight;
-            use tree::node::Node;
             use freezer::{Freeze, CryptoHash, Sink, Source};
             use meta::{Meta, SubMeta};
 
@@ -280,8 +279,7 @@ macro_rules! collection {
             pub struct CollectionMeta<$t, H>
                 where H: CryptoHash,
                       $t: Clone,
-                      $($restraints)*,
-                      $( $submeta<$subtype>: Freeze<H>, )*
+                      $($restraints)*
             {
                 _t: PhantomData<($t, H)>,
                 $(
@@ -292,6 +290,7 @@ macro_rules! collection {
             impl<T, H> Freeze<H> for CollectionMeta<T, H>
                 where T: Weight + Freeze<H>,
                       H: CryptoHash,
+                      $($submeta<$subtype>: Freeze<H>,)*
                       $($restraints)*
             {
                 fn freeze(&self, into: &mut Sink<H>)
