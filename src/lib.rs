@@ -34,4 +34,4 @@ pub use meta::{SubMeta, Max, CheckSum, Key, Cardinality};
 pub use tree::weight::Weight;
 
 // re-exports
-pub use freezer::{BlakeWrap, CryptoHash, Freeze, Sink, Source};
+pub use freezer::{BlakeWrap, CryptoHash, Freeze, Backend, Sink, Source};

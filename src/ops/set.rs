@@ -462,7 +462,7 @@ mod tests_disk {
         }
 
         let hash = set.persist().unwrap();
-        let restored = Set::<usize, PathBuf>::restore(hash, path).unwrap();
+        let restored = Set::<usize, PathBuf>::restore(&hash, path).unwrap();
 
         assert!(set == restored);
 

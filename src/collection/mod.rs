@@ -232,9 +232,9 @@ impl<T, M, H, B> Collection<T, M, H, B>
     }
 
     /// Restores a collection from the Backend given a hash
-    pub fn restore(hash: H::Digest, backend: B) -> io::Result<Self> {
+    pub fn restore(hash: &H::Digest, backend: B) -> io::Result<Self> {
         let freezer = Freezer::new(backend);
-        let root = Location::from_hash(hash);
+        let root = Location::from_hash(hash.clone());
         Ok(Collection {
                meta: freezer.get(&root)?
                    .meta()
