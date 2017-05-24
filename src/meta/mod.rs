@@ -1,3 +1,5 @@
+//! Metadata for collections
+
 pub mod cardinality;
 pub mod max;
 pub mod key;
@@ -27,26 +29,31 @@ pub trait Meta<T>
 pub trait SubMeta<T>
     where T: Clone
 {
+    /// Turns the compound `Meta` into a specific `Meta`
     fn submeta(&self) -> Cow<T>;
 }
 
+/// This enum is returned from select methods, to signal if something was found.
 #[derive(Debug)]
 pub enum Selection {
-    // We found the element
+    /// We found the element
     Hit,
-    // We found where the element would have been
-    // if it existed (by Ord, or otherwise)
+    /// We found where the element would sort if it existed.
     Between,
-    // Not here
+    /// Not here
     Miss,
 }
 
+/// A trait that metadata can implement to allow searching through
+/// the tree.
 pub trait Select<T>
     where Self: Sized + Clone
 {
+    /// Compare the metadata to an element, and return a `Selection`
     fn select(&mut self, other: Cow<Self>) -> Selection;
 }
 
+/// Like `Selection` but used on the branch level.
 pub enum Found<H>
     where H: CryptoHash
 {

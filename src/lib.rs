@@ -1,6 +1,6 @@
 //! Persistent datastructure
-
-//#![deny(missing_docs)]
+#![cfg_attr(nightly, feature(test))]
+#![deny(missing_docs)]
 
 #[cfg(not(test))]
 mod collection;
@@ -13,19 +13,25 @@ extern crate freezer;
 extern crate seahash;
 
 mod tree;
-mod meta;
+pub mod meta;
 mod ops;
 
 #[cfg(test)]
 mod test_common;
 
+#[cfg(nightly)]
+mod bench;
+
 pub use collection::Collection;
 
 pub use ops::vector::VectorOps;
-// pub use ops::map::{MapOps, MapOpsKeySum};
+pub use ops::map::{MapOps, MapOpsKeySum};
 pub use ops::set::{SetOps, SetOpsCheckSum};
 
 pub use meta::Meta;
-pub use meta::Max;
-pub use meta::CheckSum;
-pub use meta::Key;
+pub use meta::{SubMeta, Max, CheckSum, Key, Cardinality};
+
+pub use tree::weight::Weight;
+
+// re-exports
+pub use freezer::{BlakeWrap, CryptoHash, Freeze, Sink, Source};

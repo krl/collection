@@ -1,3 +1,7 @@
+//! Metadata keeping track of the maximum key of elements in the collection.
+//!
+//! Implements `Select` over sorted collections, to find where a key would sort.
+
 use seahash::SeaHasher;
 use freezer::{Freeze, CryptoHash, Sink, Source};
 
@@ -14,21 +18,32 @@ use meta::checksum::CheckSum;
 
 /// This `T` can be viewed as a Key-Value pair.
 pub trait Keyed {
+    /// The key type of `T`
     type Key: Weight + Ord + Clone;
+    /// The value type of `T`
     type Value;
 
+    /// Create a new `T` from a key value pair.
     fn new(Self::Key, Self::Value) -> Self;
+    /// Get a reference to the key of `T`
     fn key(&self) -> &Self::Key;
+    /// Get a reference to the value of `T`
     fn val(&self) -> &Self::Value;
+    /// Get a mutable reference to the value of `T`
     fn val_mut(&mut self) -> &mut Self::Value;
+    /// Throw away the key and return the value.
     fn into_val(self) -> Self::Value;
 }
 
 /// A key, K is `T::Key` where `T: Keyed`
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Key<K>(K);
+
+/// The checksum of the hashes of all keys in collection
 #[derive(Clone, PartialEq)]
 pub struct KeySum<T>(T);
+
+/// The checksum of the hashes of all values in collection
 #[derive(Clone, PartialEq)]
 pub struct ValSum<T>(T);
 

@@ -435,7 +435,7 @@ mod tests_disk {
     use meta::max::Max;
     use meta::checksum::CheckSum;
 
-    use collection::Collection;
+    use collection::*;
     use freezer::BlakeWrap;
     use std::path::PathBuf;
 

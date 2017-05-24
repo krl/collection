@@ -71,10 +71,12 @@ impl<T, M, H, B> Collection<T, M, H, B>
         }
     }
 
+    /// Returns the metadata of the collection, if non-empty
     pub fn meta(&self) -> &Option<M> {
         &self.meta
     }
 
+    /// Sets the root of the collection, updating metadata
     pub fn new_root(&mut self, loc: Location<H>) -> io::Result<()> {
         self.meta = self.freezer
             .get(&loc)?
@@ -224,10 +226,12 @@ impl<T, M, H, B> Collection<T, M, H, B>
         }
     }
 
+    /// Persists the collection to the underlying Backend
     pub fn persist(&self) -> io::Result<H::Digest> {
         self.freezer.freeze(&self.root)
     }
 
+    /// Restores a collection from the Backend given a hash
     pub fn restore(hash: H::Digest, backend: B) -> io::Result<Self> {
         let freezer = Freezer::new(backend);
         let root = Location::from_hash(hash);
@@ -266,12 +270,11 @@ macro_rules! collection {
          $( $slot:ident: $submeta:ident<$subtype:ty>, )*
      } where $($restraints:tt)*) => (
         mod col {
+            use {Weight, Freeze, CryptoHash, Sink, Source};
+            use {Meta, SubMeta};
             use std::marker::PhantomData;
             use std::borrow::Cow;
             use std::io;
-            use tree::weight::Weight;
-            use freezer::{Freeze, CryptoHash, Sink, Source};
-            use meta::{Meta, SubMeta};
 
             use super::*;
 

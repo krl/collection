@@ -1,3 +1,7 @@
+//! Metadata keeping track of the maximum element in the collection.
+//!
+//! Implements `Select` over sorted collections, to find where `T` would sort.
+
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use std::io;

@@ -1,3 +1,7 @@
+//! Metadata keeping track of the number of elements in the collection.
+//!
+//! Implements `Select` to find the n:th element.
+
 use std::marker::PhantomData;
 use std::borrow::Cow;
 use std::io;
@@ -5,16 +9,19 @@ use std::io;
 use meta::{Meta, Select, Selection};
 use freezer::{Freeze, CryptoHash, Sink, Source};
 
+/// Wrapper type for the value storing the cardinality of subtrees
 #[derive(Clone, PartialEq)]
 pub struct Cardinality<T>(T);
 
 impl<T> Cardinality<T>
     where T: Clone
 {
+    /// Construct a new `Cardinality` from `T`
     pub fn new(t: &T) -> Self {
         Cardinality(t.clone())
     }
 
+    /// Get the inner value of the wrapper type.
     pub fn inner(&self) -> &T {
         &self.0
     }

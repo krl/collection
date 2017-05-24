@@ -1,3 +1,5 @@
+//! Metadata keeping track of the checksum of elements in the collection.
+
 use seahash::SeaHasher;
 
 use std::marker::PhantomData;
